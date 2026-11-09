@@ -4,13 +4,16 @@ quantlab graphical interface (Streamlit): everything the CLI does, plus charts.
     python -m quantlab ui            (or: python -m streamlit run quantlab/ui/app.py)
 
 Pages: Backtest, Optimization (walk-forward), Chart (VWAP + support / resistance).
-The pages call the same library functions as the CLI.
+The pages call the same library functions as the CLI. With QUANTLAB_HOSTED=1 (the public demo), the inputs and the
+computations are restricted (`ui/hosting.py`).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
+import json
 import logging
 import sys
 import tempfile
@@ -39,10 +42,12 @@ from quantlab.strategies.params import (  # noqa: E402
 )
 from quantlab.strategies.registry import STRATEGIES, build_strategy  # noqa: E402
 from quantlab.ui import charts  # noqa: E402
+from quantlab.ui.hosting import ComputeSlots, LimitError, Limits, hosted, preset_slug  # noqa: E402
 
 logger = logging.getLogger("quantlab.ui")
 
 SOURCE_LABELS = {
+    "sample": "Bundled sample (2 min, offline)",
     "yfinance": "yfinance (2 min, ~60 days)",
     "file": "File (parquet / csv)",
 }
@@ -57,6 +62,20 @@ STRATEGY_LABELS = {
 OBJECTIVES = ("total_return_pct", "sharpe_ratio", "sortino_ratio", "profit_factor", "total_pnl_net", "win_rate")
 #: versioned parameter presets, `<strategy>-<name>.json`
 PRESETS_DIR = _ROOT / "presets"
+LIMITS = Limits()
+REPOSITORY_URL = "https://github.com/ThomasRondeau/Quant-Lab"
+
+
+@st.cache_resource
+def compute_slots() -> ComputeSlots:
+    """Shared by every visitor of the server process."""
+    return ComputeSlots(size=2, timeout=90.0)
+
+
+def session_presets(name: str) -> dict[str, dict[str, Any]]:
+    """Presets saved by this visitor in the hosted demo (kept in the session, never written on the server)."""
+    store: dict[str, dict[str, dict[str, Any]]] = st.session_state.setdefault("user_presets", {})
+    return store.setdefault(name, {})
 
 
 # --- shared widgets ----------------------------------------------------------------------------------------
@@ -147,13 +166,14 @@ def preset_paths(name: str) -> list[Path]:
 
 
 def preset_controls(name: str, key: str) -> None:
-    """Load a preset of `presets/` or the defaults into the widgets (drawn above them)."""
+    """Load a preset (of `presets/`, or saved in this session) or the defaults into the widgets (drawn above them)."""
     paths = {p.stem: p for p in preset_paths(name)}
+    own = {f"{name}-{slug}": values for slug, values in session_presets(name).items()}
     c1, c2, c3 = st.columns([3, 1, 1], vertical_alignment="bottom")
-    chosen = c1.selectbox("Preset", list(paths), index=None, placeholder="none", key=f"{key}_{name}_preset")
+    chosen = c1.selectbox("Preset", [*paths, *own], index=None, placeholder="none", key=f"{key}_{name}_preset")
     if c2.button("Load", key=f"{key}_{name}_load", disabled=chosen is None) and chosen is not None:
         try:
-            _, values = load_preset(paths[chosen])
+            values = own[chosen] if chosen in own else load_preset(paths[chosen])[1]
             set_widgets(key, name, STRATEGIES[name].validate(values))
             st.toast(f"Preset {chosen} loaded")
         except ParamError as exc:
@@ -203,11 +223,15 @@ def param_inputs(name: str, key: str, presets: bool = True) -> dict[str, Any]:
     if presets:
         c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
         label = c1.text_input("Save as preset", key=f"{key}_{name}_save_as", placeholder="e.g. wide-stops")
-        slug = "-".join(label.strip().lower().split())
+        slug = preset_slug(label)
         if c2.button("Save", key=f"{key}_{name}_save", disabled=not slug or bool(errors)):
-            path = PRESETS_DIR / f"{name}-{slug}.json"
-            save_preset(path, name, chosen)
-            st.toast(f"Preset saved: {path.name}")
+            if hosted():
+                session_presets(name)[slug] = dict(chosen)
+                st.toast(f"Preset saved for this session: {name}-{slug}")
+            else:
+                path = PRESETS_DIR / f"{name}-{slug}.json"
+                save_preset(path, name, chosen)
+                st.toast(f"Preset saved: {path.name}")
     return chosen
 
 
@@ -263,7 +287,9 @@ def data_inputs(key: str, multi_symbol: bool = True, default_days: int = 55) -> 
             "Symbol(s)",
             value="AAPL",
             key=f"{key}_symbols",
-            help="Comma-separated; two symbols for pair trading (e.g. AAPL, MSFT).",
+            help="Comma-separated; two symbols for pair trading (e.g. AAPL, MSFT). Bundled samples: "
+            + ", ".join(loading.sample_symbols())
+            + ".",
         )
     with columns[1]:
         source = st.selectbox(
@@ -274,7 +300,11 @@ def data_inputs(key: str, multi_symbol: bool = True, default_days: int = 55) -> 
     file_path: str | None = None
     if source == "file":
         uploaded = st.file_uploader("Bars file", type=["parquet", "csv"], key=f"{key}_upload")
-        typed = st.text_input("…or file path", key=f"{key}_path", placeholder="tests/fixtures/aapl_1m.parquet")
+        typed = (
+            ""
+            if hosted()
+            else st.text_input("…or file path", key=f"{key}_path", placeholder="tests/fixtures/aapl_1m.parquet")
+        )
         if uploaded is not None:
             file_path = save_upload(uploaded.getvalue(), uploaded.name)
         elif typed.strip():
@@ -353,6 +383,9 @@ def show_tiles(tiles: list[tuple[str, str]], per_row: int = 4) -> None:
 
 
 def show_error(exc: Exception) -> None:
+    if isinstance(exc, (LimitError, ParamError)):
+        st.warning(str(exc))  # an expected refusal, not a failure
+        return
     logger.exception("UI action failed")
     st.error(f"{type(exc).__name__}: {exc}")
 
@@ -409,12 +442,14 @@ def run_backtests(
     bar_by_bar: bool,
     execution: dict[str, Any],
 ) -> dict[str, Any]:
-    from quantlab.backtest.run import backtest
-
     bars = get_bars(data)
     train, test = loading.split(bars, test_days, test_fraction)
     if train.empty or test.empty:
         raise ValueError(f"Empty split: {len(train)} training bars, {len(test)} test bars.")
+    if hosted():
+        LIMITS.check_backtest(names, len(bars), len(test))
+    for name in names:  # invalid parameters fail here, before any computation
+        STRATEGIES[name].validate(params[name])
     runs = [[n] for n in names] if each and len(names) > 1 else []
     runs.append(list(names))
     results = {}
@@ -422,20 +457,42 @@ def run_backtests(
     for i, run_names in enumerate(runs):
         label = " + ".join(STRATEGY_LABELS[n].split(" (")[0] for n in run_names)
         progress.progress(i / len(runs), text=f"Backtest: {label}")
-        strategies = [build_strategy(n, data["symbols"], params[n]) for n in run_names]
-        results[label] = backtest(
-            strategies,
-            train,
-            test,
-            capital=execution["capital"],
-            fee_bps=execution["fee_bps"],
-            slippage_bps=execution["slippage_bps"],
-            risk_limits=execution["risk"],
-            precompute_features=not bar_by_bar,
-        )
+        spec = {
+            "names": run_names,
+            "params": {n: params[n] for n in run_names},
+            "data": data,
+            "split": [test_days, test_fraction],
+            "bar_by_bar": bar_by_bar,
+            "execution": {k: v for k, v in execution.items() if k != "risk"},
+            "risk": dataclasses.asdict(execution["risk"]),
+        }
+        results[label] = cached_backtest(json.dumps(spec, sort_keys=True, default=str))
     progress.empty()
     return {"results": results, "train": (train.index[0], train.index[-1], len(train)),
             "test": (test.index[0], test.index[-1], len(test))}  # fmt: skip
+
+
+@st.cache_data(max_entries=64, show_spinner=False)
+def cached_backtest(spec_json: str) -> Any:
+    """One backtest run, cached for every visitor by its full specification (instant for the demo defaults)."""
+    from quantlab.backtest.run import backtest
+
+    spec = json.loads(spec_json)
+    data = spec["data"]
+    bars = cached_bars(tuple(data["symbols"]), data["source"], data["days"], data["file"])
+    train, test = loading.split(bars, *spec["split"])
+    strategies = [build_strategy(n, data["symbols"], spec["params"][n]) for n in spec["names"]]
+    with compute_slots().acquire():
+        return backtest(
+            strategies,
+            train,
+            test,
+            capital=spec["execution"]["capital"],
+            fee_bps=spec["execution"]["fee_bps"],
+            slippage_bps=spec["execution"]["slippage_bps"],
+            risk_limits=RiskLimits(**spec["risk"]),
+            precompute_features=not spec["bar_by_bar"],
+        )
 
 
 def show_backtest(state: dict[str, Any]) -> None:
@@ -489,7 +546,7 @@ def page_optimize() -> None:
 
     if st.button("Run the optimization", type="primary", disabled=not grid):
         try:
-            from quantlab.backtest.walk_forward import WalkForwardOptimizer
+            from quantlab.backtest.walk_forward import WalkForwardOptimizer, make_folds
 
             bars = get_bars(data)
             optimizer = WalkForwardOptimizer(
@@ -505,7 +562,10 @@ def page_optimize() -> None:
                 min_trades=min_trades,
             )
             n = len(optimizer.candidates)
-            with st.spinner(f"{n} combinations per fold…"):
+            if hosted():
+                folds = make_folds(len(bars), train_size, validation_size, test_size, step or None, embargo, anchored)
+                LIMITS.check_optimize(name, n, len(folds), len(bars))
+            with st.spinner(f"{n} combinations per fold…"), compute_slots().acquire():
                 st.session_state["optimize"] = optimizer.run(bars)
         except Exception as exc:
             show_error(exc)
@@ -565,6 +625,11 @@ def main() -> None:
             st.Page(page_chart, title="Chart", icon=":material/candlestick_chart:", url_path="chart"),
         ]
     )
+    if hosted():
+        st.sidebar.caption(
+            "Online demo: bundled market data and capped computations. "
+            f"[Source code and full version]({REPOSITORY_URL})."
+        )
     navigation.run()
 
 

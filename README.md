@@ -38,12 +38,12 @@ The engine is **live-ready**. Backtest and live trading share one trading loop a
   - atomic state snapshots after each bar;
   - restart that reproduces an uninterrupted run exactly;
   - a replay that compares a session with the backtester.
-- **Web interface** (Streamlit):
+- **Web interface** (Streamlit), also deployable as a public demo with a hosted mode (bundled data, capped computations, shared result cache):
   - forms generated from the parameter sheets;
   - equity, drawdown and per-trade P&L charts;
   - optimization ranges;
   - session charts with VWAP and support / resistance.
-- **Engineering**: 170 tests (offline, no network), `mypy --strict`, ruff, pre-commit hooks, and a 100 ms per-bar latency budget enforced by a test.
+- **Engineering**: 176 tests (offline, no network), `mypy --strict`, ruff, pre-commit hooks, and a 100 ms per-bar latency budget enforced by a test.
 
 ## Quick start
 
@@ -54,19 +54,18 @@ git clone <repository-url> quant-lab && cd quant-lab
 python -m pip install -e ".[dev]"
 ```
 
-Run a backtest offline on the bundled sample (AAPL, 1-minute bars):
+Run backtests offline. By default, the data comes from the bundled samples: 2-minute bars of AAPL, MSFT, NVDA, SPY and QQQ, about six weeks each.
 
 ```bash
-python -m quantlab backtest --strategy trend --strategy mean_reversion --symbol AAPL \
-    --source file --file tests/fixtures/aapl_1m.parquet --test-fraction 0.3 --each
+python -m quantlab backtest --strategy trend --strategy mean_reversion --symbol AAPL --test-days 5 --each
+python -m quantlab backtest --strategy pair --symbol SPY --symbol QQQ \
+    --param size_mode=notional --param size_value=20000
 ```
 
-Use recent market data from yfinance (free, no API key; about 60 days of 2-minute bars):
+Or download recent market data from yfinance (free, no API key; about 60 days of 2-minute bars):
 
 ```bash
-python -m quantlab backtest --strategy cascade --symbol SPY --days 55 --test-days 5
-python -m quantlab backtest --strategy pair --symbol AAPL --symbol MSFT --days 55 \
-    --param size_mode=notional --param size_value=20000
+python -m quantlab backtest --strategy cascade --symbol AMZN --source yfinance --days 55 --test-days 5
 ```
 
 Open the web interface:
@@ -127,7 +126,7 @@ Fees are 1 bp per side and slippage 1 bp. No edge is claimed here. The point of 
 
 ```
 quantlab/
-├── data/         yfinance and file loading, one OHLCV contract (UTC), multi-symbol layout
+├── data/         bundled samples, yfinance and file loading, one OHLCV contract (UTC), multi-symbol layout
 ├── features/     causal features, dependency-resolving pipeline, composite sets for the models
 ├── models/       scikit-learn / XGBoost wrapper with time-ordered cross-validation, rolling ARIMA
 ├── strategies/   strategy base class, parameter sheets, the six strategies, registry

@@ -310,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     data = argparse.ArgumentParser(add_help=False)
     data.add_argument("--symbol", action="append", required=True, help="repeat for multi-symbol strategies")
-    data.add_argument("--source", choices=SOURCES, default="yfinance")
+    data.add_argument("--source", choices=SOURCES, default="sample", help="sample: bundled data, offline (default)")
     data.add_argument("--file", help="bars file for --source file (parquet or csv)")
     data.add_argument("--days", type=int, default=55, help="history window in calendar days")
 

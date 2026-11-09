@@ -1,0 +1,6 @@
+[server]
+# uploaded bars files (parquet / csv), in MB
+maxUploadSize = 10
+
+[browser]
+gatherUsageStats = false

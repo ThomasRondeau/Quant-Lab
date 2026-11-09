@@ -25,8 +25,7 @@ python -m pre_commit install            # ruff + mypy hooks before each commit
 Example commands:
 
 ```bash
-python -m quantlab backtest --strategy trend --symbol AAPL --source file \
-    --file tests/fixtures/aapl_1m.parquet --test-fraction 0.3
+python -m quantlab backtest --strategy trend --symbol AAPL --test-days 5          # bundled sample, offline
 python -m quantlab backtest --strategy pair --symbol AAPL --symbol MSFT --days 55 --param zscore_threshold=2.0
 python -m quantlab optimize --strategy trend --symbol AAPL --range sma_fast=5:20:5 --grid sma_slow=30,50 \
     --train-size 3000 --validation-size 1000 --test-size 1000
@@ -57,8 +56,9 @@ quantlab/
 ├── data/
 │   ├── schema.py           validate_ohlcv, bar_value, bar_time
 │   ├── pairs.py            combine_symbols (multi-symbol layout)
-│   ├── loading.py          load_bars, split (shared by the CLI and the interface)
-│   └── data_manager.py     DataManager: yfinance
+│   ├── loading.py          load_bars, split, read_sample (shared by the CLI and the interface)
+│   ├── data_manager.py     DataManager: yfinance
+│   └── samples/            bundled 2-minute bars, one parquet file per symbol (the default source)
 ├── features/
 │   ├── base.py             Feature (abstract), Source, ewm_warmup
 │   ├── pipeline.py         FeaturePipeline (dependencies, total warmup)
@@ -100,7 +100,8 @@ quantlab/
 │   └── plot.py             session_bars, levels_figure, plot_levels (VWAP + support and resistance)
 └── ui/                     Streamlit interface
     ├── app.py              pages: Backtest, Optimization, Chart
-    └── charts.py           Altair charts (equity, drawdown, per-trade P&L, bars, lines)
+    ├── charts.py           Altair charts (equity, drawdown, per-trade P&L, bars, lines)
+    └── hosting.py          hosted mode (QUANTLAB_HOSTED=1): limits, compute slots, safe preset names
 ```
 
 ---
@@ -371,6 +372,7 @@ The interface (`quantlab/ui/app.py`) holds no logic of its own: each page calls 
   - a new strategy registered in `registry.py` therefore appears on every page without interface code.
 - **Widget values** are kept in `st.session_state["<page>_<strategy>_<parameter>"]`. Presets write them there, before the widgets are drawn.
 - **Reruns**: Streamlit reruns the script at every interaction. Results to keep go to `st.session_state`, and downloaded data to `st.cache_data`.
+- **Hosted mode**: anything that reads a path, writes a file or can run for long must respect `hosted()` (`ui/hosting.py`): no server path, presets in the session, `Limits` checks before computing, `compute_slots()` around heavy work.
 - **Charts**: colors by role (a fixed categorical order, blue for a single series, blue / red for gains / losses), hover tooltips, New York time.
 
 ---
@@ -398,6 +400,7 @@ The interface (`quantlab/ui/app.py`) holds no logic of its own: each page calls 
 | `test_cli.py` | argument parsing (`--param`, `--params-file`, `--range`), registry, `backtest` and `optimize` commands on the fixtures |
 | `test_ui.py` | Streamlit interface without a browser (`AppTest`): every page renders, generated forms, presets, optimization ranges, backtest and chart end to end |
 | `test_bugfixes.py` | regressions of the bugs fixed during the refactoring of the original prototype |
+| `test_hosting.py` | hosted mode: bundled samples, limits, safe preset names, compute slots, the hosted backtest page |
 | `test_walk_forward.py` | fold layout, embargo, parameter selection, fresh instances |
 | `test_latency.py` (slow) | median `on_bar` latency of Cascade < 100 ms |
 

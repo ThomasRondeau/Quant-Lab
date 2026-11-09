@@ -29,6 +29,9 @@ dev = ["streamlit>=1.40", "pytest>=8", "ruff>=0.6", "mypy>=1.11", "pandas-stubs"
 [tool.setuptools.packages.find]
 include = ["quantlab*"]
 
+[tool.setuptools.package-data]
+"quantlab.data" = ["samples/*.parquet"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

@@ -10,7 +10,23 @@ import pandas as pd
 from quantlab.data.pairs import combine_symbols
 from quantlab.data.schema import validate_ohlcv
 
-SOURCES = ("yfinance", "file")
+SOURCES = ("sample", "yfinance", "file")
+#: bundled 2-minute bars (offline demo data): one parquet file per symbol
+SAMPLES_DIR = Path(__file__).parent / "samples"
+
+
+def sample_symbols() -> list[str]:
+    return sorted(p.stem for p in SAMPLES_DIR.glob("*.parquet"))
+
+
+def read_sample(symbol: str, days: int) -> pd.DataFrame:
+    """Bundled bars of `symbol`, limited to the last `days` calendar days of the sample."""
+    path = SAMPLES_DIR / f"{symbol.upper()}.parquet"
+    if not path.exists():
+        raise ValueError(f"No bundled sample for {symbol!r}; available: {', '.join(sample_symbols())}.")
+    bars = validate_ohlcv(pd.read_parquet(path))
+    recent: pd.DataFrame = bars[bars.index >= bars.index[-1] - pd.Timedelta(days=days)]
+    return recent
 
 
 def read_bars_file(path: str | Path, symbols: Sequence[str] = ()) -> pd.DataFrame:
@@ -30,6 +46,8 @@ def load_bars(symbols: Sequence[str], source: str, days: int, file: str | Path |
         if not file:
             raise ValueError("The file source needs a file path.")
         return read_bars_file(file, symbols)
+    if source == "sample":
+        return combine_symbols({symbol: read_sample(symbol, days) for symbol in symbols})
 
     from quantlab.data.data_manager import DataManager
 

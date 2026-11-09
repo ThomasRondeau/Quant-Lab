@@ -26,6 +26,16 @@ Any backtest-only optimization, such as precomputing the features, must be **pro
 
 The system is driven from the command line (`python -m quantlab …`) or from the **web interface** (`python -m quantlab ui`). Both call the same library functions. The interface adds charts: equity curve, drawdown, per-trade P&L, scores per fold, session charts.
 
+### 1.1 Hosted mode
+
+The interface also runs as a public online demo. With `QUANTLAB_HOSTED=1` (`ui/hosting.py`), the interface:
+
+- reads data from the bundled samples, from uploads (10 MB at most, `.streamlit/config.toml`) or from yfinance, and never from a path typed on the server;
+- keeps the presets a visitor saves in that visitor's session; nothing is written on the server;
+- caps one request: 12,000 bars, 3 strategies at once, 200 test bars for ARIMA, and a number of walk-forward runs (combinations × folds) per strategy. ARIMA cannot be optimized online. A request over a limit gets a message instead of running;
+- runs at most 2 heavy computations at once across all visitors, and the others wait;
+- caches every backtest by its full specification for all visitors, so the default runs are instant after the first one.
+
 ---
 
 ## 2. Overview
@@ -63,10 +73,11 @@ A **backtest** is this runner fed by a `HistoricalBarFeed` and wired to a `Simul
 
 | Source | Resolution | Depth | Requirement |
 |---|---|---|---|
-| yfinance | 2 min | ~60 days | none (free, no API key) |
-| File | any | any | parquet or csv |
+| `sample` (default) | 2 min | about six weeks: AAPL, MSFT, NVDA, SPY, QQQ | none: bundled in `quantlab/data/samples/`, offline |
+| `yfinance` | 2 min | ~60 days | network (free, no API key) |
+| `file` | any | any | parquet or csv |
 
-The download window follows one convention, `(symbol, days_back, until)`: from `days_back` days ago to `until` days ago.
+The window follows one convention, `(symbol, days_back, until)`: from `days_back` days ago to `until` days ago. For the samples, the days count back from the end of the sample.
 
 ### 3.2 One format (`validate_ohlcv`)
 
