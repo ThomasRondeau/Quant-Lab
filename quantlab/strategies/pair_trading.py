@@ -29,15 +29,15 @@ class PairTradingStrategy(Strategy):
 
     is_group = True
     PARAMS = (
-        Param("zscore_threshold", "float", 2.2, "Entrée quand |z-score| du ratio des prix dépasse ce seuil.",
+        Param("zscore_threshold", "float", 2.2, "Enter when |z-score| of the price ratio exceeds this threshold.",
               "signal", min=0.01, max=20),
-        Param("exit_zscore", "float", 0.5, "Sortie quand |z-score| revient sous ce seuil. 0 = aucune.",
-              "sorties", min=0, max=20, optional=True),
-        Param("leg_stop_pct", "float", 5.0, "Stop de chaque jambe chez le broker, en % (filet si l'application "
-              "tombe ; plus large que le stop combiné). Obligatoire.", "sorties",
+        Param("exit_zscore", "float", 0.5, "Exit when |z-score| comes back below this threshold. 0 = none.",
+              "exits", min=0, max=20, optional=True),
+        Param("leg_stop_pct", "float", 5.0, "Protective stop of each leg at the broker, in % (a safety net "
+              "if the app is down; wider than the combined stop). Required.", "exits",
               min=0.01, max=100),
-        Param("zscore_window", "int", 30, "Fenêtre du z-score du ratio.", "indicateurs", min=2, max=5000),
-        Param("smoothing_window", "int", 3, "Lissage du z-score (moyenne mobile).", "indicateurs", min=1, max=500),
+        Param("zscore_window", "int", 30, "Window of the z-score of the ratio.", "indicators", min=2, max=5000),
+        Param("smoothing_window", "int", 3, "Smoothing of the z-score (moving average).", "indicators", min=1, max=500),
         *size_sheet(group=True),
         *exit_sheet(group=True),
     )  # fmt: skip

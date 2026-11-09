@@ -21,7 +21,7 @@ from typing import Any, Literal
 Kind = Literal["int", "float", "bool", "choice", "tuple"]
 
 #: display order of the groups (UI sections, `quantlab params`)
-GROUPS = ("signal", "indicateurs", "modèle", "cible", "taille", "sorties")
+GROUPS = ("signal", "indicators", "model", "target", "sizing", "exits")
 
 
 class ParamError(ValueError):
@@ -49,7 +49,7 @@ class Param:
 
     @property
     def section(self) -> str:
-        """Group without its qualifier (`modèle:direction` -> `modèle`)."""
+        """Group without its qualifier (`model:direction` -> `model`)."""
         return self.group.split(":", 1)[0]
 
     def convert(self, value: Any) -> Any:
@@ -74,9 +74,9 @@ class Param:
             if isinstance(value, bool):
                 return value
             text = str(value).strip().lower()
-            if text in ("true", "1", "yes", "oui"):
+            if text in ("true", "1", "yes"):
                 return True
-            if text in ("false", "0", "no", "non"):
+            if text in ("false", "0", "no"):
                 return False
             raise ValueError(value)
         if self.kind == "int":

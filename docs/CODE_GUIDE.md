@@ -37,7 +37,7 @@ python -m quantlab params --strategy mean_reversion
 
 ## 2. Conventions
 
-- **Code in English**: names, docstrings, logs. The interface labels and the parameter help texts are in French, and so are the parameter group keys (`signal`, `indicateurs`, `modèle`, `cible`, `taille`, `sorties`).
+- **Everything in English**: names, docstrings, logs, interface labels and parameter help texts.
 - **`logging` everywhere, never `print`**. Only the CLI prints its result tables.
 - **The `__init__.py` files are empty**: always import from the module that defines the object (`from quantlab.features.technical import SMA`). This avoids circular imports and module shadowing.
 - **Strict typing**: `mypy --strict` passes with zero errors, and the pre-commit hook enforces it. Untyped libraries (sklearn, xgboost) are tolerated through `ignore_missing_imports`.
@@ -280,8 +280,8 @@ class BreakoutStrategy(Strategy):
     """Buy when the close breaks above its moving average by k ATRs (and vice versa)."""
 
     PARAMS = (
-        Param("window", "int", 20, "Fenêtre de la moyenne mobile.", "indicateurs", min=2, max=1000),
-        Param("k", "float", 2.0, "Cassure à k ATR de la moyenne.", "signal", min=0, max=20),
+        Param("window", "int", 20, "Moving-average window.", "indicators", min=2, max=1000),
+        Param("k", "float", 2.0, "Breakout distance, in ATRs.", "signal", min=0, max=20),
         *with_defaults(Strategy.PARAMS, holding_bars=10),  # base size and exit parameters
     )
 

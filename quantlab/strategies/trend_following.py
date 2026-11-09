@@ -16,8 +16,8 @@ class TrendFollowingStrategy(Strategy):
     """Fast/slow SMA crossover."""
 
     PARAMS = (
-        Param("sma_fast", "int", 5, "Fenêtre de la moyenne mobile rapide (barres).", "indicateurs", min=1, max=1000),
-        Param("sma_slow", "int", 20, "Fenêtre de la moyenne mobile lente (barres).", "indicateurs", min=2, max=5000),
+        Param("sma_fast", "int", 5, "Fast moving-average window (bars).", "indicators", min=1, max=1000),
+        Param("sma_slow", "int", 20, "Slow moving-average window (bars).", "indicators", min=2, max=5000),
         *Strategy.PARAMS,
     )
 

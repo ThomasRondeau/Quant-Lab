@@ -26,11 +26,11 @@ class MLHybridStrategy(Strategy):
     """Mean reversion entries (Bollinger + RSI + volume) confirmed by an XGBoost direction model."""
 
     PARAMS = (
-        Param("rsi_buy", "float", 35, "Achat si le prix est sous la bande basse et RSI < ce seuil.", "signal",
+        Param("rsi_buy", "float", 35, "Buy below the lower band when RSI < this threshold.", "signal",
               min=0, max=100),
-        Param("rsi_sell", "float", 65, "Vente si le prix est sur la bande haute et RSI > ce seuil.", "signal",
+        Param("rsi_sell", "float", 65, "Sell above the upper band when RSI > this threshold.", "signal",
               min=0, max=100),
-        Param("volume_threshold", "float", 1.1, "Ratio de volume minimal.", "signal", min=0, max=100),
+        Param("volume_threshold", "float", 1.1, "Minimum volume ratio.", "signal", min=0, max=100),
         *xgb_params("", "direction"),
         *target_params(cv_folds=False),
         *indicator_params(volume_window=20),

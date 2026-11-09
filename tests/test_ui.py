@@ -41,12 +41,12 @@ def test_backtest_page_runs_on_a_file(tmp_path: Path) -> None:
     at.multiselect[0].set_value(["trend", "mean_reversion"]).run()
     at.selectbox(key="bt_source").set_value("file").run()
     at.text_input(key="bt_path").set_value(str(FIXTURES / "aapl_1m.parquet")).run()
-    at.radio(key="bt_split").set_value("Dernière fraction").run()
+    at.radio(key="bt_split").set_value("Last fraction").run()
     at.number_input(key="bt_trend_sma_fast").set_value(8).run()  # generated from the parameter sheet
-    next(b for b in at.button if b.label == "Lancer le backtest").click().run()
+    next(b for b in at.button if b.label == "Run the backtest").click().run()
     no_errors(at)
     labels = [m.label for m in at.metric]
-    assert {"Rendement", "Trades", "Sharpe"} <= set(labels)
+    assert {"Return", "Trades", "Sharpe"} <= set(labels)
     assert len(at.dataframe) >= 2  # comparison of the runs + trades
 
 
@@ -59,7 +59,7 @@ def test_forms_are_generated_from_the_parameter_sheets() -> None:
     for name in ("cascade", "pair"):
         keys = {w.key for w in [*at.number_input, *at.checkbox, *at.selectbox, *at.text_input] if w.key}
         assert {f"bt_{name}_{p.name}" for p in sheet(name)} <= keys
-    assert {"Signal", "Indicateurs", "Modèle : direction", "Cible", "Taille", "Sorties"} <= {t.label for t in at.tabs}
+    assert {"Signal", "Indicators", "Model: direction", "Target", "Sizing", "Exits"} <= {t.label for t in at.tabs}
     assert "bt_pair_stop_atr" not in keys  # no ATR exit for a group
 
     # an inconsistent value is reported under the form, before running
@@ -72,7 +72,7 @@ def test_forms_are_generated_from_the_parameter_sheets() -> None:
 
     stop_atr = next(p for p in sheet("trend") if p.name == "stop_atr")
     assert to_widget(stop_atr, None) == 0.0 and from_widget(stop_atr, 0.0) is None and from_widget(stop_atr, 1.5) == 1.5
-    assert list(grouped(sheet("trend")))[:2] == ["indicateurs", "taille"]
+    assert list(grouped(sheet("trend")))[:2] == ["indicators", "sizing"]
     assert parse_extra("sma_fast=10" + chr(10) * 2 + "k=1.5") == {"sma_fast": 10, "k": 1.5}
     with pytest.raises(ValueError):
         parse_extra("oops")
@@ -97,14 +97,14 @@ def test_presets_load_reset_and_save(tmp_path: Path) -> None:
 
     at = AppTest.from_function(script, args=(str(tmp_path),), default_timeout=60).run()
     at.selectbox(key="t_trend_preset").set_value("trend-court").run()
-    next(b for b in at.button if b.label == "Charger").click().run()
+    next(b for b in at.button if b.label == "Load").click().run()
     no_errors(at)
     assert at.number_input(key="t_trend_sma_fast").value == 3 and at.number_input(key="t_trend_stop_atr").value == 1.5
     at.text_input(key="t_trend_save_as").set_value("Copie Courte").run()
-    next(b for b in at.button if b.label == "Enregistrer").click().run()
+    next(b for b in at.button if b.label == "Save").click().run()
     assert load_preset(tmp_path / "trend-copie-courte.json") == ("trend", {"sma_fast": 3, "sma_slow": 12,
                                                                            "stop_atr": 1.5})  # fmt: skip
-    next(b for b in at.button if b.label == "Défauts").click().run()
+    next(b for b in at.button if b.label == "Defaults").click().run()
     assert at.number_input(key="t_trend_sma_fast").value == 5 and at.number_input(key="t_trend_stop_atr").value == 0
     app.PRESETS_DIR = original
 
@@ -120,15 +120,15 @@ def test_optimization_ranges_build_the_grid() -> None:
     at.number_input(key="wf_range_trend_stop_atr_step").set_value(0.5).run()
     no_errors(at)
     caption = " ".join(c.value for c in at.caption)
-    assert "sma_fast : 3, 6, 9" in caption and "stop_atr : 1.0, 1.5, 2.0" in caption
-    assert "size_mode : fixed, notional, equity_pct, risk" in caption
+    assert "sma_fast: 3, 6, 9" in caption and "stop_atr: 1.0, 1.5, 2.0" in caption
+    assert "size_mode: fixed, notional, equity_pct, risk" in caption
 
 
 def test_chart_page_draws_a_session() -> None:
     at = page_app("page_chart").run()
     at.selectbox(key="chart_source").set_value("file").run()
     at.text_input(key="chart_path").set_value(str(FIXTURES / "aapl_1m.parquet")).run()
-    next(b for b in at.button if b.label == "Tracer").click().run()
+    next(b for b in at.button if b.label == "Draw").click().run()
     no_errors(at)
     assert at.get("imgs") or at.get("download_button")
 

@@ -49,13 +49,13 @@ def equity_chart(curves: Mapping[str, pd.Series], height: int = 280) -> alt.Char
         alt.Chart(data)
         .mark_line(strokeWidth=2)
         .encode(
-            x=alt.X("time:T", title="Heure de New York"),
-            y=alt.Y("equity:Q", title="Capital ($)", scale=alt.Scale(zero=False)),
+            x=alt.X("time:T", title="New York time"),
+            y=alt.Y("equity:Q", title="Equity ($)", scale=alt.Scale(zero=False)),
             color=color,
             tooltip=[
                 alt.Tooltip("run:N", title="Run"),
-                alt.Tooltip("time:T", title="Heure", format="%Y-%m-%d %H:%M"),
-                alt.Tooltip("equity:Q", title="Capital", format=",.2f"),
+                alt.Tooltip("time:T", title="Time", format="%Y-%m-%d %H:%M"),
+                alt.Tooltip("equity:Q", title="Equity", format=",.2f"),
             ],
         )
         .properties(height=height)
@@ -71,10 +71,10 @@ def drawdown_chart(equity: pd.Series, height: int = 160) -> alt.Chart:
         alt.Chart(data)
         .mark_area(color=SINGLE, opacity=0.35, line={"color": SINGLE, "strokeWidth": 2})
         .encode(
-            x=alt.X("time:T", title="Heure de New York"),
+            x=alt.X("time:T", title="New York time"),
             y=alt.Y("drawdown:Q", title="Drawdown (%)"),
             tooltip=[
-                alt.Tooltip("time:T", title="Heure", format="%Y-%m-%d %H:%M"),
+                alt.Tooltip("time:T", title="Time", format="%Y-%m-%d %H:%M"),
                 alt.Tooltip("drawdown:Q", title="Drawdown (%)", format=".3f"),
             ],
         )
@@ -86,27 +86,27 @@ def trade_pnl_chart(trades: pd.DataFrame, height: int = 220) -> alt.Chart:
     """Net P&L of each trade in exit order: blue gains, red losses."""
     data = trades.reset_index(drop=True).copy()
     data["trade"] = data.index + 1
-    data["result"] = ["Gain" if v > 0 else "Perte" for v in data["pnl_net"]]
+    data["result"] = ["Gain" if v > 0 else "Loss" for v in data["pnl_net"]]
     data["exit"] = exchange_time(data["exit_time"]).strftime("%Y-%m-%d %H:%M")
     return (
         alt.Chart(data)
         .mark_bar(cornerRadiusEnd=4)
         .encode(
-            x=alt.X("trade:O", title="Trade n°", axis=alt.Axis(labelOverlap=True)),
+            x=alt.X("trade:O", title="Trade #", axis=alt.Axis(labelOverlap=True)),
             y=alt.Y("pnl_net:Q", title="P&L net ($)"),
             color=alt.Color(
                 "result:N",
                 title=None,
-                scale=alt.Scale(domain=["Gain", "Perte"], range=[GAIN, LOSS]),
+                scale=alt.Scale(domain=["Gain", "Loss"], range=[GAIN, LOSS]),
                 legend=alt.Legend(orient="top"),
             ),
             tooltip=[
                 alt.Tooltip("trade:O", title="Trade"),
-                alt.Tooltip("strategy_id:N", title="Stratégie"),
-                alt.Tooltip("symbol:N", title="Symbole"),
-                alt.Tooltip("side:N", title="Sens"),
-                alt.Tooltip("exit:N", title="Sortie"),
-                alt.Tooltip("reason:N", title="Raison"),
+                alt.Tooltip("strategy_id:N", title="Strategy"),
+                alt.Tooltip("symbol:N", title="Symbol"),
+                alt.Tooltip("side:N", title="Side"),
+                alt.Tooltip("exit:N", title="Exit"),
+                alt.Tooltip("reason:N", title="Reason"),
                 alt.Tooltip("pnl_net:Q", title="P&L net", format=",.2f"),
             ],
         )
@@ -136,10 +136,10 @@ def time_line(times: pd.Series, values: pd.Series, title: str, height: int = 160
         alt.Chart(data)
         .mark_line(color=SINGLE, strokeWidth=2)
         .encode(
-            x=alt.X("time:T", title="Heure de New York"),
+            x=alt.X("time:T", title="New York time"),
             y=alt.Y("value:Q", title=title, scale=alt.Scale(zero=False)),
             tooltip=[
-                alt.Tooltip("time:T", title="Heure", format="%Y-%m-%d %H:%M"),
+                alt.Tooltip("time:T", title="Time", format="%Y-%m-%d %H:%M"),
                 alt.Tooltip("value:Q", title=title, format=fmt),
             ],
         )

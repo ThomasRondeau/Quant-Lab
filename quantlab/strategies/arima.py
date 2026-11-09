@@ -14,10 +14,10 @@ class ArimaStrategy(Strategy):
     """Trade the direction of the ARIMA one-bar forecast when it beats trading costs."""
 
     PARAMS = (
-        Param("min_edge_bps", "float", 2.0, "Mouvement prévu minimal pour trader, en points de base du prix.",
+        Param("min_edge_bps", "float", 2.0, "Minimum forecast move to trade, in basis points of the price.",
               "signal", min=0, max=10_000),
-        Param("order", "tuple", (2, 1, 0), "Ordre ARIMA (p, d, q).", "modèle:arima", min=0, max=10),
-        Param("window", "int", 50, "Clôtures sur lesquelles l'ARIMA est réestimé à chaque barre.", "modèle:arima",
+        Param("order", "tuple", (2, 1, 0), "ARIMA order (p, d, q).", "model:arima", min=0, max=10),
+        Param("window", "int", 50, "Closes the ARIMA is refitted on at each bar.", "model:arima",
               min=10, max=5000),
         *with_defaults(Strategy.PARAMS, quantity=5),
     )  # fmt: skip

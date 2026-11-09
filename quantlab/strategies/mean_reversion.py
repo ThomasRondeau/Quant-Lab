@@ -23,17 +23,17 @@ class MeanReversionStrategy(Strategy):
     """
 
     PARAMS = (
-        Param("rsi_threshold", "float", 30, "Survente si RSI < seuil, surachat si RSI > 100 - seuil.", "signal",
+        Param("rsi_threshold", "float", 30, "Oversold: RSI < threshold; overbought: RSI > 100 - threshold.", "signal",
               min=0, max=50),
-        Param("volume_threshold", "float", 1.2, "Ratio de volume minimal (pic de volume).", "signal", min=0, max=100),
-        Param("band_atr_multiple", "float", 0.2, "Le prix doit sortir des bandes d'au moins k x ATR.", "signal",
+        Param("volume_threshold", "float", 1.2, "Minimum volume ratio (volume spike).", "signal", min=0, max=100),
+        Param("band_atr_multiple", "float", 0.2, "The price must leave the bands by at least k x ATR.", "signal",
               min=0, max=20),
-        Param("target_middle_band", "bool", False, "Objectif = bande de Bollinger médiane au signal.", "sorties"),
-        Param("bb_window", "int", 20, "Fenêtre des bandes de Bollinger.", "indicateurs", min=2, max=1000),
-        Param("bb_std", "float", 2.0, "Écart des bandes, en écarts-types.", "indicateurs", min=0.1, max=10),
-        Param("rsi_window", "int", 14, "Fenêtre du RSI.", "indicateurs", min=2, max=1000),
-        Param("volume_window", "int", 20, "Fenêtre du ratio de volume.", "indicateurs", min=1, max=1000),
-        Param("band_atr_window", "int", 14, "Fenêtre de l'ATR du filtre de bandes.", "indicateurs", min=1, max=1000),
+        Param("target_middle_band", "bool", False, "Target = the Bollinger middle band at the signal.", "exits"),
+        Param("bb_window", "int", 20, "Bollinger Bands window.", "indicators", min=2, max=1000),
+        Param("bb_std", "float", 2.0, "Band width, in standard deviations.", "indicators", min=0.1, max=10),
+        Param("rsi_window", "int", 14, "RSI window.", "indicators", min=2, max=1000),
+        Param("volume_window", "int", 20, "Volume-ratio window.", "indicators", min=1, max=1000),
+        Param("band_atr_window", "int", 14, "Window of the ATR of the band filter.", "indicators", min=1, max=1000),
         *Strategy.PARAMS,
     )  # fmt: skip
     # Class values: the defaults of strategies pickled before these parameters existed

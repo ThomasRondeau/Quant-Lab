@@ -179,7 +179,7 @@ Each strategy declares a **parameter sheet** (`PARAMS`, `strategies/params.py`).
 - the name and the type (`int`, `float`, `bool`, `choice`, `tuple`);
 - the default and the bounds;
 - the group: signal, indicators, model, target, sizing or exits;
-- a help text (in French, like the interface).
+- a help text.
 
 The sheet is the single reference:
 

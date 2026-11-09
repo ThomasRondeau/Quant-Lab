@@ -46,8 +46,8 @@ def exit_sheet(group: bool = False) -> tuple[Param, ...]:
             "stop_loss_pct",
             "float",
             2.0,
-            "Stop loss, en % du notionnel de la paire (P&L combiné), vérifié à chaque clôture de barre. Obligatoire.",
-            "sorties",
+            "Stop loss, in % of the pair's notional (combined P&L), checked at each bar close. Required.",
+            "exits",
             min=0.01,
             max=100,
         )
@@ -56,24 +56,24 @@ def exit_sheet(group: bool = False) -> tuple[Param, ...]:
             "stop_loss_pct",
             "float",
             2.0,
-            "Stop loss, en % du prix d'entrée. 0 = aucun (l'entrée est alors refusée).",
-            "sorties",
+            "Stop loss, in % of the entry price. 0 = none (the entry is then refused).",
+            "exits",
             min=0,
             max=100,
             optional=True,
         )
-    of = "du notionnel de la paire (P&L combiné)" if group else "du prix d'entrée"
+    of = "of the pair's notional (combined P&L)" if group else "of the entry price"
     sheet = (
         stop,
-        Param("take_profit_pct", "float", 5.0, f"Objectif, en % {of}. 0 = aucun.", "sorties", min=0, max=1000,
+        Param("take_profit_pct", "float", 5.0, f"Target, in % {of}. 0 = none.", "exits", min=0, max=1000,
               optional=True),
-        Param("holding_bars", "int", 5, "Sortie au marché après ce nombre de barres. 0 = aucune.", "sorties",
+        Param("holding_bars", "int", 5, "Exit at market after this many bars. 0 = none.", "exits",
               min=0, max=100_000, optional=True),
-        Param("stop_atr", "float", None, "Stop en multiples d'ATR mesuré au signal (remplace le %). 0 = non.",
-              "sorties", min=0, max=100, optional=True),
-        Param("take_profit_atr", "float", None, "Objectif en multiples d'ATR (remplace le %). 0 = non.",
-              "sorties", min=0, max=100, optional=True),
-        Param("atr_window", "int", 14, "Fenêtre de l'ATR des sorties.", "sorties", min=1, max=1000),
+        Param("stop_atr", "float", None, "Stop in ATR multiples measured at the signal (replaces the %). 0 = no.",
+              "exits", min=0, max=100, optional=True),
+        Param("take_profit_atr", "float", None, "Target in ATR multiples (replaces the %). 0 = no.",
+              "exits", min=0, max=100, optional=True),
+        Param("atr_window", "int", 14, "Window of the exit ATR.", "exits", min=1, max=1000),
     )  # fmt: skip
     return tuple(p for p in sheet if not (group and p.name in ("stop_atr", "take_profit_atr", "atr_window")))
 
@@ -84,15 +84,15 @@ EXIT_PARAMS = tuple(p.name for p in exit_sheet())
 
 def size_sheet(group: bool = False) -> tuple[Param, ...]:
     """The base size parameters (executed by the router, `execution/sizing.py`)."""
-    quantity = "Actions de la première jambe (même notionnel sur l'autre)" if group else "Actions par entrée"
+    quantity = "Shares of the first leg (same notional on the other)" if group else "Shares per entry"
     return (
-        Param("size_mode", "choice", "fixed", "Taille : fixed (quantité), notional ($), equity_pct (% du capital) "
-              "ou risk (% du capital perdu au stop).", "taille", choices=SIZE_MODES),
-        Param("quantity", "int", 10, f"{quantity} en mode fixed, fois la conviction.", "taille", min=1,
+        Param("size_mode", "choice", "fixed", "Size: fixed (quantity), notional ($), equity_pct (% of equity) "
+              "or risk (% of equity lost at the stop).", "sizing", choices=SIZE_MODES),
+        Param("quantity", "int", 10, f"{quantity} in fixed mode, times the conviction.", "sizing", min=1,
               max=1_000_000),
-        Param("size_value", "float", None, "$ (notional) ou % du capital (equity_pct, risk) ; vide en mode fixed.",
-              "taille", min=0, max=1e9, optional=True),
-        Param("size_min_stop_pct", "float", 0.1, "Mode risk : distance minimale au stop, en % du prix.", "taille",
+        Param("size_value", "float", None, "$ (notional) or % of equity (equity_pct, risk); empty in fixed mode.",
+              "sizing", min=0, max=1e9, optional=True),
+        Param("size_min_stop_pct", "float", 0.1, "Risk mode: minimum stop distance, in % of the price.", "sizing",
               min=0.001, max=100),
     )  # fmt: skip
 
