@@ -1,0 +1,20 @@
+# Install once: python -m pre_commit install
+# Windows Store Python: if creating the hook environments fails on a long path, first set
+#   VIRTUALENV_OVERRIDE_APP_DATA=<home>/.cache/virtualenv
+# Tests are not a hook (they need the full environment): run `python -m pytest` before pushing.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.3
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.4.1
+    hooks:
+      - id: mypy
+        files: ^quantlab/
+        args: [--config-file=pyproject.toml]
+        additional_dependencies: [pandas-stubs, numpy, streamlit, altair]
+

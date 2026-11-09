@@ -1,0 +1,8 @@
+{
+  "strategy": "pair",
+  "params": {
+    "zscore_threshold": 2.5,
+    "exit_zscore": 0.25,
+    "holding_bars": 30
+  }
+}

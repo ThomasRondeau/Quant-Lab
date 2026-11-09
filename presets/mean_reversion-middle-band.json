@@ -1,0 +1,8 @@
+{
+  "strategy": "mean_reversion",
+  "params": {
+    "target_middle_band": true,
+    "rsi_threshold": 25,
+    "volume_threshold": 1.5
+  }
+}

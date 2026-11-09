@@ -1,0 +1,9 @@
+{
+  "strategy": "cascade",
+  "params": {
+    "horizon": 10,
+    "training_margin": 40,
+    "holding_bars": 10,
+    "min_amplitude_threshold": 0.1
+  }
+}

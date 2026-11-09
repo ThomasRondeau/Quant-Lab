@@ -1,0 +1,8 @@
+{
+  "strategy": "arima",
+  "params": {
+    "order": [1, 1, 1],
+    "window": 100,
+    "min_edge_bps": 4.0
+  }
+}

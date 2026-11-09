@@ -1,0 +1,8 @@
+{
+  "strategy": "ml_hybrid",
+  "params": {
+    "max_depth": 3,
+    "n_estimators": 200,
+    "learning_rate": 0.03
+  }
+}

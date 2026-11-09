@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-lab"
+version = "0.1.0"
+description = "Machine-learning trading-strategy research: features, models, strategies and a live-ready backtester"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.2",
+    "pandas>=2.3",
+    "scikit-learn>=1.7",
+    "xgboost>=3.0",
+    "statsmodels>=0.14",
+    "matplotlib>=3.10",
+    "mplfinance>=0.12.10b0",
+    "yfinance>=1.2",
+    "pyarrow>=17",
+]
+
+[project.scripts]
+quantlab = "quantlab.cli:main"
+
+[project.optional-dependencies]
+ui = ["streamlit>=1.40"]
+dev = ["streamlit>=1.40", "pytest>=8", "ruff>=0.6", "mypy>=1.11", "pandas-stubs", "pre-commit>=3"]
+
+[tool.setuptools.packages.find]
+include = ["quantlab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["slow: end-to-end backtests on fixtures (deselect with -m 'not slow')"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Altair's chart builders are typed as returning Any
+module = "quantlab.ui.charts"
+warn_return_any = false

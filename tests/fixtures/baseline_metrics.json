@@ -1,0 +1,74 @@
+{
+  "arima": {
+    "avg_trade_return_pct": 6.978715855154745e-05,
+    "max_drawdown_pct": -0.0073259402758216055,
+    "profit_factor": 1.0013024224721172,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "total_fees": 4.967324500540001,
+    "total_pnl_net": 0.01135089946100909,
+    "total_return_pct": 1.1350899487005961e-05,
+    "total_trades": 18.0,
+    "win_rate": 44.44444444444444
+  },
+  "cascade": {
+    "avg_trade_return_pct": 0.02032079567830488,
+    "max_drawdown_pct": -0.004945830876973533,
+    "profit_factor": 1.2190993959557415,
+    "sharpe_ratio": 7.614985332647109,
+    "sortino_ratio": 69.39088950634209,
+    "total_fees": 1.390000378418,
+    "total_pnl_net": 1.3781992015821007,
+    "total_return_pct": 0.0013781992016070888,
+    "total_trades": 25.0,
+    "win_rate": 52.0
+  },
+  "mean_reversion": {
+    "avg_trade_return_pct": -0.09570107103073447,
+    "max_drawdown_pct": -0.08142495439435625,
+    "profit_factor": 0.3455680788762645,
+    "sharpe_ratio": -6.809741478283897,
+    "sortino_ratio": -7.5035791149005915,
+    "total_fees": 11.643228227249999,
+    "total_pnl_net": -56.01145612724781,
+    "total_return_pct": -0.05601145612725844,
+    "total_trades": 21.0,
+    "win_rate": 42.857142857142854
+  },
+  "ml_hybrid": {
+    "avg_trade_return_pct": -0.14604494165077295,
+    "max_drawdown_pct": -0.1629742352814465,
+    "profit_factor": 0.25789100317319097,
+    "sharpe_ratio": -7.924057090726529,
+    "sortino_ratio": -8.315651706567293,
+    "total_fees": 17.18078721041,
+    "total_pnl_net": -125.40257351040826,
+    "total_return_pct": -0.12540257351046913,
+    "total_trades": 31.0,
+    "win_rate": 38.70967741935484
+  },
+  "pair_trading": {
+    "avg_trade_return_pct": 0.056212134286362105,
+    "max_drawdown_pct": -0.07608760815322098,
+    "profit_factor": 1.639300855584137,
+    "sharpe_ratio": 13.229330079106562,
+    "sortino_ratio": 0.0,
+    "total_fees": 36.81567468604127,
+    "total_pnl_net": 107.91100721093368,
+    "total_return_pct": 0.10791100721092572,
+    "total_trades": 56.0,
+    "win_rate": 42.857142857142854
+  },
+  "trend_following": {
+    "avg_trade_return_pct": -0.04785123129129451,
+    "max_drawdown_pct": -0.09889990699356674,
+    "profit_factor": 0.35508949055871586,
+    "sharpe_ratio": -13.237546793997755,
+    "sortino_ratio": -11.342622676852583,
+    "total_fees": 39.856660761940006,
+    "total_pnl_net": -95.90732136192987,
+    "total_return_pct": -0.09590732136198765,
+    "total_trades": 72.0,
+    "win_rate": 19.444444444444446
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "strategy": "trend",
+  "params": {
+    "stop_atr": 1.5,
+    "take_profit_atr": 3.0,
+    "holding_bars": 20
+  }
+}
