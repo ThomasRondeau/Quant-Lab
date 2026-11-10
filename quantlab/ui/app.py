@@ -3,7 +3,7 @@ quantlab graphical interface (Streamlit): everything the CLI does, plus charts.
 
     python -m quantlab ui            (or: python -m streamlit run quantlab/ui/app.py)
 
-Pages: Backtest, Optimization (walk-forward), Chart (VWAP + support / resistance).
+Pages: Data (analysis of a set of bars), Backtest, Optimization (walk-forward), Live trading (simulated).
 The pages call the same library functions as the CLI. With QUANTLAB_HOSTED=1 (the public demo), the inputs and the
 computations are restricted (`ui/hosting.py`).
 """
@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import io
 import json
 import logging
+import re
 import sys
 import tempfile
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,8 @@ OBJECTIVES = ("total_return_pct", "sharpe_ratio", "sortino_ratio", "profit_facto
 PRESETS_DIR = _ROOT / "presets"
 LIMITS = Limits()
 REPOSITORY_URL = "https://github.com/ThomasRondeau/Quant-Lab"
+#: simulated live sessions run from the interface (local runs; the hosted demo uses a temporary folder)
+SESSIONS_DIR = _ROOT / "sessions"
 
 
 @st.cache_resource
@@ -280,7 +283,7 @@ def grid_inputs(name: str) -> dict[str, list[Any]]:
     return grid
 
 
-def data_inputs(key: str, multi_symbol: bool = True, default_days: int = 55) -> dict[str, Any]:
+def data_inputs(key: str) -> dict[str, Any]:
     columns = st.columns([2, 2, 1])
     with columns[0]:
         symbols_text = st.text_input(
@@ -296,7 +299,7 @@ def data_inputs(key: str, multi_symbol: bool = True, default_days: int = 55) -> 
             "Source", list(loading.SOURCES), format_func=SOURCE_LABELS.__getitem__, key=f"{key}_source"
         )
     with columns[2]:
-        days = int(st.number_input("Days of history", min_value=1, value=default_days, key=f"{key}_days"))
+        days = int(st.number_input("Days of history", min_value=1, value=55, key=f"{key}_days"))
     file_path: str | None = None
     if source == "file":
         uploaded = st.file_uploader("Bars file", type=["parquet", "csv"], key=f"{key}_upload")
@@ -310,8 +313,6 @@ def data_inputs(key: str, multi_symbol: bool = True, default_days: int = 55) -> 
         elif typed.strip():
             file_path = typed.strip()
     symbols = [s.strip().upper() for s in symbols_text.split(",") if s.strip()]
-    if not multi_symbol:
-        symbols = symbols[:1]
     return {"symbols": symbols, "source": source, "days": days, "file": file_path}
 
 
@@ -391,6 +392,183 @@ def show_error(exc: Exception) -> None:
 
 
 # --- pages -------------------------------------------------------------------------------------------------
+
+
+def page_data() -> None:
+    from quantlab.analysis import dataset
+
+    st.header("Data")
+    st.caption(
+        "Explore a set of bars before trading it: the price over the period you choose, then the returns, the "
+        "intraday profile, the sessions and the quality of the data. Times are New York time."
+    )
+    data = data_inputs("data")
+    symbols: list[str] = data["symbols"]
+    if data["source"] == "file" and not data["file"]:
+        st.info("Upload a bars file" + ("." if hosted() else ", or type its path."))
+        return
+    try:
+        if len(symbols) > len(charts.SERIES):
+            raise LimitError(f"At most {len(charts.SERIES)} symbols at once.")
+        frames = dataset.symbol_bars(get_bars(data), symbols)
+    except Exception as exc:
+        show_error(exc)
+        return
+    index = pd.DatetimeIndex(frames[symbols[0]].index)
+    start, end = period_slider(index, dataset.bar_interval(index))
+    frames = {symbol: frame.loc[start:end] for symbol, frame in frames.items()}
+    if min(len(frame) for frame in frames.values()) < 2:
+        st.warning("This period holds fewer than two bars: widen it.")
+        return
+
+    if len(symbols) == 1:
+        symbol = symbols[0]
+        st.altair_chart(charts.price_chart({symbol: frames[symbol]["close"]}, "Close ($)", x_title=None),
+                        width="stretch")  # fmt: skip
+        st.altair_chart(charts.volume_chart(frames[symbol]["volume"]), width="stretch")
+    else:
+        rebased = {s: frame["close"] / frame["close"].iloc[0] * 100 for s, frame in frames.items()}
+        st.altair_chart(charts.price_chart(rebased, "Close (start of the period = 100)"), width="stretch")
+        symbol = st.radio("Symbol analyzed below", symbols, horizontal=True, key="data_symbol")
+    frame = frames[symbol]
+    figures, checks = dataset.summary(frame), dataset.quality(frame)
+    show_tiles(
+        [
+            ("Bars", f"{figures['bars']:,}"),
+            ("Sessions", f"{figures['sessions']:,}"),
+            ("Bar interval", format_duration(figures["interval"])),
+            ("Missing bars", f"{checks['missing_bars']:,}"),
+            ("Return", f"{figures['return_pct']:+.2f} %"),
+            ("Low - high", f"{figures['low']:,.2f} - {figures['high']:,.2f}"),
+            ("Volatility (annualized)", "-" if pd.isna(figures["volatility_pct"]) else
+             f"{figures['volatility_pct']:.1f} %"),
+            ("Volume per session", compact(figures["session_volume"])),
+        ]
+    )  # fmt: skip
+
+    returns_tab, profile_tab, sessions_tab, quality_tab, bars_tab = st.tabs(
+        ["Returns", "Intraday profile", "Sessions", "Quality", "Bars"]
+    )
+    with returns_tab:
+        data_returns(frames, symbol)
+    with profile_tab:
+        profile = dataset.intraday_profile(frame)
+        if len(profile) < 2:
+            st.info("The bars all share one time of day: no intraday profile.")
+        else:
+            hours = [label for label in profile.index if label.endswith(":00")] or None
+            c1, c2 = st.columns(2)
+            c1.markdown("**Average volume per bar**, by time of day")
+            c1.altair_chart(charts.value_bars(profile["volume"], "Volume", "New York time", fmt=",.0f", ticks=hours),
+                            width="stretch")  # fmt: skip
+            c2.markdown("**Average size of a bar move** (absolute return, bp), by time of day")
+            c2.altair_chart(charts.value_bars(profile["abs_return_bp"].dropna(), "Absolute return (bp)",
+                                              "New York time", fmt=",.2f", ticks=hours), width="stretch")  # fmt: skip
+    with sessions_tab:
+        table = dataset.sessions(frame)
+        if len(table) > 1:
+            labels = pd.Index([f"{day:%b %d}" for day in table.index])
+            st.altair_chart(charts.signed_bars(table["return_pct"].set_axis(labels), "Return (%)", "Session"),
+                            width="stretch")  # fmt: skip
+        st.caption("Return: on the previous close (first session: on its open). Range: high over low.")
+        st.dataframe(table.round({"return_pct": 3, "range_pct": 3}), width="stretch", height=300)
+        st.download_button("Sessions (CSV)", table.to_csv(), f"{symbol}_sessions.csv", "text/csv")
+    with quality_tab:
+        show_tiles(
+            [
+                ("Missing bars", f"{checks['missing_bars']:,}"),
+                ("Incomplete sessions", f"{checks['incomplete_sessions']:,}"),
+                ("Largest gap in a session", format_duration(checks["largest_gap"])),
+                ("Bars without volume", f"{checks['zero_volume_bars']:,}"),
+                ("Inconsistent bars", f"{checks['inconsistent_bars']:,}"),
+                ("Bars with a missing value", f"{checks['missing_values']:,}"),
+            ],
+            per_row=3,
+        )
+        st.caption(
+            "Missing bars: holes inside a session, between its first and its last bar. Incomplete sessions: fewer "
+            "bars than the typical session (a half day, or the period cutting a session). Inconsistent bars: a high "
+            "under the open or the close, a low above them, or a price at or under zero."
+        )
+    with bars_tab:
+        st.dataframe(frame.rename_axis("New York time"), width="stretch", height=360)
+        st.download_button("Bars of the period (CSV)", frame.to_csv(), f"{symbol}_bars.csv", "text/csv")
+
+
+def period_slider(index: pd.DatetimeIndex, interval: pd.Timedelta) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Range slider over the time span of the bars, one bar per step; a new span starts from the full range."""
+    step = max(interval, pd.Timedelta(minutes=1))
+    first = index[0]
+    last = first + -(-(index[-1] - first) // step) * step  # the last bar, on the grid of the steps
+    if last <= first:
+        return first, first
+    start, end = st.slider(
+        "Period",
+        min_value=first.to_pydatetime(),
+        max_value=last.to_pydatetime(),
+        value=(first.to_pydatetime(), last.to_pydatetime()),
+        step=step.to_pytimedelta(),
+        format="YYYY-MM-DD HH:mm",
+        key=f"data_period_{first:%Y%m%d%H%M}_{last:%Y%m%d%H%M}",
+        help="Drag both ends: the chart and every figure below follow the period.",
+    )
+    return pd.Timestamp(start), pd.Timestamp(end)
+
+
+#: share of the bar returns left out of the histogram on each side
+TAIL = 0.005
+
+
+def data_returns(frames: Mapping[str, pd.DataFrame], symbol: str) -> None:
+    from quantlab.analysis import dataset
+
+    returns = dataset.intraday_returns(frames[symbol])
+    if len(returns) < 2:
+        st.info("Not enough bars for a distribution.")
+        return
+    stats = dataset.return_stats(returns)
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        st.markdown("**Bar returns** (close to close inside a session, overnight gaps left out)")
+        low, high = returns.quantile([TAIL, 1 - TAIL])
+        body = returns[(returns >= low) & (returns <= high)]
+        st.altair_chart(charts.histogram(body * 1e4, "Return (bp)"), width="stretch")
+        st.caption(f"The {len(returns) - len(body)} most extreme returns are not drawn, to keep the body readable: "
+                   "see Worst and Best.")  # fmt: skip
+    with c2:
+        st.markdown(f"**{len(returns):,} returns**")
+        show_tiles(
+            [
+                ("Mean", f"{stats['mean_bp']:+.3f} bp"),
+                ("Standard deviation", f"{stats['std_bp']:.2f} bp"),
+                ("Worst", f"{stats['min_bp']:+.1f} bp"),
+                ("Best", f"{stats['max_bp']:+.1f} bp"),
+                ("Skewness", f"{stats['skew']:+.2f}"),
+                ("Excess kurtosis", f"{stats['excess_kurtosis']:+.2f}"),
+                ("Bars up", f"{stats['positive_pct']:.1f} %"),
+            ],
+            per_row=2,
+        )
+    if len(frames) > 1:
+        st.markdown("**Correlation of the bar returns**")
+        st.dataframe(dataset.return_correlation(frames).round(3), width="stretch")
+
+
+def format_duration(duration: pd.Timedelta) -> str:
+    """A bar interval or a gap, in its largest whole unit (2 min, 1 h, 1 d)."""
+    seconds = duration.total_seconds()
+    for unit, size in (("d", 86400), ("h", 3600), ("min", 60)):
+        if seconds >= size and seconds % size == 0:
+            return f"{seconds / size:.0f} {unit}"
+    return f"{seconds / 60:.1f} min" if seconds >= 60 else f"{seconds:.0f} s"
+
+
+def compact(value: float) -> str:
+    """A large count on a tile: 45.2M rather than 45,213,870."""
+    for unit, size in (("B", 1e9), ("M", 1e6), ("k", 1e3)):
+        if abs(value) >= size:
+            return f"{value / size:.1f}{unit}"
+    return f"{value:.0f}"
 
 
 def page_backtest() -> None:
@@ -586,32 +764,203 @@ def page_optimize() -> None:
         st.dataframe(summary, width="stretch")
 
 
-def page_chart() -> None:
-    from quantlab.analysis.plot import levels_figure, session_bars
+# --- simulated live trading ------------------------------------------------------------------------------
 
-    st.header("Session chart")
+#: hosted demo: sessions in a temporary folder, a few at once, short and bounded
+HOSTED_SESSIONS = {"max_running": 3, "per_owner": 1, "max_bars": 975, "max_seconds": 900.0, "keep_seconds": 3600.0}
+SPEEDS = (1.0, 2.0, 5.0, 10.0, 20.0)
+
+
+@st.cache_resource
+def simulated_sessions(is_hosted: bool) -> Any:
+    from quantlab.live.session import SimulatedSessions
+
+    if is_hosted:
+        return SimulatedSessions(
+            Path(tempfile.gettempdir()) / "quantlab_sessions",
+            max_running=int(HOSTED_SESSIONS["max_running"]),
+            per_owner=int(HOSTED_SESSIONS["per_owner"]),
+            prepare_guard=compute_slots().acquire,
+        )
+    return SimulatedSessions(SESSIONS_DIR)
+
+
+def visitor_id() -> str:
+    """The visitor's id in the hosted demo (kept in the URL so a reload finds its sessions); "local" otherwise."""
+    if not hosted():
+        return "local"
+    if "visitor" not in st.session_state:
+        candidate = str(st.query_params.get("visitor", ""))
+        st.session_state["visitor"] = candidate if re.fullmatch(r"[0-9a-f]{12}", candidate) else uuid.uuid4().hex[:12]
+    visitor: str = st.session_state["visitor"]
+    st.query_params["visitor"] = visitor
+    return visitor
+
+
+def page_live() -> None:
+    from quantlab.live.session import SessionLimitError, SimulatedConfig
+
+    st.header("Live trading (simulated)")
     st.caption(
-        "Candles, volume, the VWAP and its bands, and the best support / resistance lines. These lines use "
-        "future bars: they are for visual analysis only, never a signal."
+        "A strategy trades a real-time stream of bars, with the same engine as a live session: orders, fills, "
+        "protective stops and targets, positions, journal and persisted state. The bars replay the end of the "
+        "bundled data, or come from a synthetic market; the broker is simulated. Once it ends, replay the session "
+        "in the backtester to check that both agree."
     )
-    data = data_inputs("chart", multi_symbol=False, default_days=3)
-    c1, c2 = st.columns(2)
-    day = c1.date_input("Session (empty = the last one)", value=None)
-    n_lines = int(c2.number_input("Support / resistance lines", min_value=0, max_value=10, value=3))
-    if st.button("Draw", type="primary"):
+    c1, c2 = st.columns([1, 1])
+    name = c1.selectbox("Strategy", list(STRATEGIES), format_func=STRATEGY_LABELS.__getitem__, key="live_strategy")
+    default_symbols = "SPY, QQQ" if STRATEGIES[name].n_symbols == 2 else "AAPL"
+    symbols_text = c2.text_input("Symbol(s)", value=default_symbols, key=f"live_symbols_{name}",
+                                 help="Bundled samples: " + ", ".join(loading.sample_symbols()) + ".")  # fmt: skip
+    with st.expander(f"Parameters: {STRATEGY_LABELS[name]}"):
+        params = param_inputs(name, "live")
+    c1, c2, c3, c4 = st.columns(4)
+    source = c1.radio("Market", ["replay", "synthetic"], key="live_source", horizontal=True,
+                      format_func={"replay": "Replay", "synthetic": "Synthetic"}.__getitem__,
+                      help="Replay: the end of the bundled data. Synthetic: a random market after it.")  # fmt: skip
+    max_bars = HOSTED_SESSIONS["max_bars"] if hosted() else 5000
+    live_bars = int(c2.number_input("Bars to stream", min_value=50, max_value=int(max_bars), value=390, step=65,
+                                    key="live_bars", help="195 two-minute bars = one session."))  # fmt: skip
+    speed = c3.select_slider("Speed (bars per second)", SPEEDS, value=2.0, key="live_speed")
+    seed = int(
+        c4.number_input("Seed (synthetic)", min_value=0, value=7, key="live_seed", disabled=source != "synthetic")
+    )
+    execution = execution_inputs("live")
+    symbols = [s.strip().upper() for s in symbols_text.split(",") if s.strip()]
+    registry = simulated_sessions(hosted())
+    owner = visitor_id()
+
+    if st.button("Start the session", type="primary"):
         try:
-            bars, chosen = session_bars(get_bars(data), day.isoformat() if day else None)
-            with st.spinner("Computing the levels…"):
-                figure = levels_figure(bars, f"{data['symbols'][0]} {chosen} (New York time)", n_lines)
-            buffer = io.BytesIO()
-            figure.savefig(buffer, format="png", dpi=120)
-            st.session_state["chart"] = (figure, buffer.getvalue(), f"{data['symbols'][0]}_{chosen}.png")
+            STRATEGIES[name].validate(params)
+            if len(symbols) != STRATEGIES[name].n_symbols:
+                raise ValueError(f"{STRATEGY_LABELS[name]} needs {STRATEGIES[name].n_symbols} symbol(s).")
+            if hosted():
+                registry.cleanup(HOSTED_SESSIONS["keep_seconds"])
+            config = SimulatedConfig(
+                strategy=name,
+                symbols=tuple(symbols),
+                params=params,
+                source="synthetic" if source == "synthetic" else "replay",
+                live_bars=live_bars,
+                bars_per_second=float(speed),
+                max_seconds=HOSTED_SESSIONS["max_seconds"] if hosted() else None,
+                seed=seed,
+                capital=execution["capital"],
+                risk=execution["risk"],
+                fee_bps=execution["fee_bps"],
+                slippage_bps=execution["slippage_bps"],
+            )
+            session_name = f"{name}_{'_'.join(symbols)}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
+            registry.start(session_name, config, owner=owner)
+            st.toast(f"Session {session_name} started")
+        except (SessionLimitError, ValueError) as exc:
+            show_error(LimitError(str(exc)))
+    entries = sorted(registry.entries(owner), key=lambda e: e.started, reverse=True)
+    if not entries:
+        st.info("No session yet: choose a strategy and start one.")
+        return
+    if any(e.alive for e in entries):
+        live_monitor_running(owner)
+    else:
+        live_monitor(owner)
+
+
+def live_monitor(owner: str) -> None:
+    entries = sorted(simulated_sessions(hosted()).entries(owner), key=lambda e: e.started, reverse=True)
+    for i, entry in enumerate(entries):
+        with st.container(border=True):
+            session_panel(entry, expanded=i == 0)
+
+
+@st.fragment(run_every=2)
+def live_monitor_running(owner: str) -> None:
+    live_monitor(owner)
+    if not any(e.alive for e in simulated_sessions(hosted()).entries(owner)):
+        st.rerun()  # the last session ended: stop refreshing
+
+
+def session_panel(entry: Any, expanded: bool) -> None:
+    from quantlab.ui.live_view import read_session
+
+    delivered, total = entry.session.progress
+    config = entry.session.config
+    c1, c2 = st.columns([5, 1])
+    c1.markdown(
+        f"**{entry.name}** · {STRATEGY_LABELS[config.strategy]} on {', '.join(config.symbols)} · "
+        f"{config.source} · {config.bars_per_second:g} bars/s · status **{entry.status}**"
+    )
+    if entry.alive and c2.button("Stop", key=f"stop_{entry.name}"):
+        entry.stop()
+        st.toast(f"Stopping {entry.name}")
+    if entry.error:
+        st.error(entry.error)
+        return
+    st.progress(min(delivered / total, 1.0) if total else 0.0, text=f"{delivered} / {total} bars")
+    if not expanded:
+        return
+    view = read_session(entry.path)
+    if not view.bars:
+        st.caption("Training the strategy on the history…" if entry.status == "training" else "Waiting for bars…")
+        return
+    unrealized = float(view.lots["unrealized P&L"].fillna(0).sum()) if not view.lots.empty else 0.0
+    show_tiles(
+        [
+            ("Equity", f"{view.equity:,.2f} $" if view.equity is not None else "-"),
+            ("Realized P&L", f"{view.realized_pnl:+,.2f} $"),
+            ("Unrealized P&L", f"{unrealized:+,.2f} $"),
+            ("Trades (won)", f"{view.trades} ({view.wins})"),
+            ("Positions", ", ".join(f"{k} {v:+d}" for k, v in view.positions.items()) or "flat"),
+            ("Last bar", f"{charts.exchange_time(pd.DatetimeIndex([view.last_bar]))[0]:%m-%d %H:%M}"),
+            ("Latency p50", f"{view.latency_p50_ms:.1f} ms" if view.latency_p50_ms is not None else "-"),
+            ("Kill switch", "ON" if view.halted else "off"),
+        ]
+    )
+    if len(view.equity_curve) > 1:
+        st.altair_chart(charts.equity_chart({"Equity": view.equity_curve}, height=220), width="stretch")
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        st.markdown("**Open positions**")
+        if view.lots.empty:
+            st.caption("None.")
+        else:
+            st.dataframe(view.lots, width="stretch", hide_index=True)
+    with c2:
+        st.markdown("**Activity** (newest first)")
+        activity = view.activity.assign(bar=charts.exchange_time(pd.DatetimeIndex(view.activity["bar"])))
+        st.dataframe(activity, width="stretch", hide_index=True, height=300)
+    if not view.closed_trades.empty and len(view.closed_trades) > 1:
+        st.altair_chart(charts.trade_pnl_chart(view.closed_trades), width="stretch")
+    if not entry.alive:
+        session_replay(entry)
+
+
+def session_replay(entry: Any) -> None:
+    key = f"replay_{entry.owner}_{entry.name}"
+    if st.button("Replay in the backtester", key=f"btn_{key}"):
+        try:
+            from quantlab.analysis.replay import replay_session
+
+            with st.spinner("Replay…"), compute_slots().acquire():
+                st.session_state[key] = replay_session(entry.path)
         except Exception as exc:
             show_error(exc)
-    if "chart" in st.session_state:
-        figure, png, filename = st.session_state["chart"]
-        st.pyplot(figure)
-        st.download_button("Download (PNG)", png, filename, "image/png")
+    report = st.session_state.get(key)
+    if report is None:
+        return
+    s = report.summary
+    st.markdown(
+        "**Replay**: the session's strategies, as they were before the first live bar, rerun on the journaled "
+        "bars with the simulated broker."
+    )
+    show_tiles(
+        [
+            ("Signal agreement", f"{s['signal_agreement_pct']:.1f} %"),
+            ("Signals live / replay", f"{s['signals_live']:.0f} / {s['signals_replay']:.0f}"),
+            ("Entry slippage", f"{s['entry_slippage_bps_mean']:+.2f} bp"),
+            ("Net P&L live / replay", f"{s['pnl_net_live']:+,.2f} / {s['pnl_net_replay']:+,.2f} $"),
+        ]
+    )
 
 
 def main() -> None:
@@ -620,9 +969,10 @@ def main() -> None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     navigation = st.navigation(
         [
-            st.Page(page_backtest, title="Backtest", icon=":material/query_stats:", default=True),
+            st.Page(page_data, title="Data", icon=":material/database:", default=True),
+            st.Page(page_backtest, title="Backtest", icon=":material/query_stats:", url_path="backtest"),
             st.Page(page_optimize, title="Optimization", icon=":material/tune:", url_path="optimization"),
-            st.Page(page_chart, title="Chart", icon=":material/candlestick_chart:", url_path="chart"),
+            st.Page(page_live, title="Live trading", icon=":material/sensors:", url_path="live"),
         ]
     )
     if hosted():

@@ -12,6 +12,7 @@ quantlab command line: one entry point for strategy research.
     quantlab params --strategy cascade                (every parameter: group, default, bounds, help)
     quantlab optimize --strategy trend --symbol AAPL --range sma_fast=5:20:5 --grid sma_slow=30,50,100 \\
                       --train-size 3000 --validation-size 1000 --test-size 1000 --embargo 30
+    quantlab live --strategy trend --symbol AAPL --source synthetic --speed 5      (simulated live trading)
     quantlab replay --session NAME
     quantlab plot --symbol SPY --days 3
     quantlab ui                                     (graphical interface in the browser)
@@ -258,6 +259,51 @@ def cmd_optimize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_live(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    from quantlab.live.session import SimulatedConfig, SimulatedSession
+
+    if len(args.strategy) != 1:
+        raise SystemExit("live takes exactly one --strategy")
+    name = args.strategy[0]
+    config = SimulatedConfig(
+        strategy=name,
+        symbols=tuple(args.symbol),
+        params=strategy_params(args, [name])[name],
+        source=args.source,
+        live_bars=args.bars,
+        bars_per_second=args.speed,
+        seed=args.seed,
+        capital=args.capital,
+        risk=risk_limits(args),
+        fee_bps=args.fee_bps,
+        slippage_bps=args.slippage_bps,
+        data_source=args.data,
+        days=args.days,
+    )
+    session_name = args.session or f"{name}_{'_'.join(args.symbol)}_{datetime.now():%Y%m%d_%H%M%S}"
+    session = SimulatedSession(args.sessions_dir / session_name, config)
+    session.prepare()
+    assert session.runner is not None
+    session.runner.router.fill_listeners.append(
+        lambda fill: logger.info(
+            "%s fill %s %d %s @ %.2f", fill.timestamp, fill.order.side, fill.quantity, fill.order.symbol, fill.price
+        )
+    )
+    logger.info("Streaming %d bars at %g bars/s (Ctrl+C to stop)", config.live_bars, config.bars_per_second)
+    try:
+        runner = session.run()
+    except KeyboardInterrupt:
+        session.stop()
+        raise SystemExit(f"Interrupted; session saved in {session.files.root}") from None
+    trades = runner.router.trades
+    print(f"Session {session.files.root} ({session.status}): {len(trades)} trades, "
+          f"net P&L {sum(t.pnl_net for t in trades):+,.2f}, equity {runner.portfolio.equity:,.2f}")  # fmt: skip
+    print(f"Compare it with the backtester: quantlab replay --session {session_name}")
+    return 0
+
+
 def cmd_replay(args: argparse.Namespace) -> int:
     from quantlab.analysis.replay import replay_session
 
@@ -366,6 +412,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--objective", default="total_return_pct")
     p.add_argument("--min-trades", type=int, default=5)
     p.set_defaults(func=cmd_optimize)
+
+    p = commands.add_parser(
+        "live",
+        parents=[strategy, execution_parser(live=False), sessions],
+        help="simulated live trading: a strategy trades a real-time stream of replayed or synthetic bars",
+    )
+    p.add_argument("--symbol", action="append", required=True, help="repeat for multi-symbol strategies")
+    p.add_argument(
+        "--source",
+        choices=("replay", "synthetic"),
+        default="replay",
+        help="replay: the last bars of the data; synthetic: a random market continuing the data",
+    )
+    p.add_argument("--bars", type=int, default=975, help="bars to stream (975 = five sessions of 2-minute bars)")
+    p.add_argument("--speed", type=float, default=2.0, help="bars per second (0: as fast as possible)")
+    p.add_argument("--seed", type=int, help="seed of the synthetic market")
+    p.add_argument("--data", choices=SOURCES, default="sample", help="where the bars come from")
+    p.add_argument("--days", type=int, default=60, help="history window in calendar days")
+    p.add_argument("--session", help="name (default: <strategy>_<symbols>_<time>)")
+    p.set_defaults(func=cmd_live)
 
     p = commands.add_parser("replay", parents=[sessions], help="replay a session in the backtester")
     p.add_argument("--session", required=True)

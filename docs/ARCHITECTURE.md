@@ -24,7 +24,7 @@ The guiding principle: **one code path for backtest and live**. Features, models
 
 Any backtest-only optimization, such as precomputing the features, must be **proven identical** to the live path by a parity test.
 
-The system is driven from the command line (`python -m quantlab …`) or from the **web interface** (`python -m quantlab ui`). Both call the same library functions. The interface adds charts: equity curve, drawdown, per-trade P&L, scores per fold, session charts.
+The system is driven from the command line (`python -m quantlab …`) or from the **web interface** (`python -m quantlab ui`). Both call the same library functions. The interface opens on a data page, which analyzes a set of bars over a chosen period (price, returns, intraday profile, sessions, quality), and adds charts: equity curve, drawdown, per-trade P&L, scores per fold.
 
 ### 1.1 Hosted mode
 
@@ -34,7 +34,8 @@ The interface also runs as a public online demo. With `QUANTLAB_HOSTED=1` (`ui/h
 - keeps the presets a visitor saves in that visitor's session; nothing is written on the server;
 - caps one request: 12,000 bars, 3 strategies at once, 200 test bars for ARIMA, and a number of walk-forward runs (combinations × folds) per strategy. ARIMA cannot be optimized online. A request over a limit gets a message instead of running;
 - runs at most 2 heavy computations at once across all visitors, and the others wait;
-- caches every backtest by its full specification for all visitors, so the default runs are instant after the first one.
+- caches every backtest by its full specification for all visitors, so the default runs are instant after the first one;
+- runs simulated live sessions in a temporary folder: 3 at once across all visitors, 1 per visitor, 975 bars and 15 minutes at most, deleted after an hour. A visitor is identified by a random id kept in the page URL, so a reload finds its sessions again.
 
 ---
 
@@ -382,9 +383,43 @@ The embargo drops bars between the blocks, so that targets built on future price
 
 ---
 
-## 10. Sessions: journal, restart, replay
+## 10. Live sessions: simulated trading, journal, restart, replay
 
 A live session is the same runner on a real-time `BarFeed`, with a `Journal` and a `StateStore`. These parts of the runtime are independent of any broker.
+
+### 10.0 Simulated live trading (`live/`)
+
+`quantlab live` and the "Live trading" page run a strategy on a real-time stream without any market connection:
+
+```
+ bars (bundled sample, or any source) ──► split: history │ live bars
+                                                  │            │ replay: the last N bars
+                                                  │            │ synthetic: N new bars continuing the history
+                                                  ▼            ▼
+                              strategy.fit(history)    PacedBarFeed: one bar every 1 / speed seconds,
+                              snapshot (session.json,  heartbeats in between, stop() from any thread,
+                              strategies.pkl)          an optional wall-clock limit
+                                                  │            │
+                                                  ▼            ▼
+                       StrategyRunner(SimulatedBroker, Journal, StateStore).run(feed)
+```
+
+- **Synthetic market** (`synthetic_bars`):
+  - log-normal returns with each symbol's realized volatility, correlated across symbols (0.8 by default, for pairs);
+  - higher volatility near the open and the close;
+  - volumes around the history's median;
+  - timestamps in the New York regular sessions, weekdays only.
+
+  It is reproducible with a seed. It is a plausible stream to trade on, not a forecast.
+- **Background sessions** (`SimulatedSessions`):
+  - the web interface reruns its script on every interaction, so sessions run in threads, in a registry that lives as long as the server process;
+  - each session reports its status (loading data, training, running, finished, stopped, error) and its progress;
+  - the page refreshes itself every 2 seconds while a session runs.
+- **Live view** (`ui/live_view.py`): built from the session's files only, the journal and the state saved after every bar:
+  - equity curve, realized and unrealized P&L;
+  - open lots with their stop, target and holding time;
+  - an activity feed of signals (with the size the risk checks let through), orders, fills and trades.
+- **Replay**: a session ended this way replays with 100 % signal agreement and the same P&L. The same code runs on the same bars with the same simulated broker, which is the parity the platform guarantees.
 
 ### 10.1 Session files
 

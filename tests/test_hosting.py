@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from pathlib import Path
 
@@ -115,3 +116,44 @@ def test_hosted_backtest_page(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     next(b for b in at.button if b.label == "Run the backtest").click().run()
     assert not at.exception and any("ARIMA refits a model" in w.value for w in at.warning)
     app.PRESETS_DIR = original
+
+
+def test_hosted_live_page_identifies_the_visitor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import quantlab.ui.app as app
+
+    monkeypatch.setattr(app, "PRESETS_DIR", app.PRESETS_DIR)  # the script below replaces it: restored after
+    monkeypatch.setenv("QUANTLAB_HOSTED", "1")
+    at = hosted_app("page_live", str(tmp_path)).run()
+    assert not at.exception
+    visitor = at.query_params["visitor"]
+    visitor = visitor if isinstance(visitor, str) else visitor[0]
+    assert len(visitor) == 12 and int(visitor, 16) >= 0
+    assert at.number_input(key="live_bars").max == 975  # bounded sessions online
+
+
+def test_hosted_data_page_is_the_landing_page(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import quantlab.ui.app as app
+
+    monkeypatch.setattr(app, "PRESETS_DIR", app.PRESETS_DIR)  # the script below replaces it: restored after
+    monkeypatch.setenv("QUANTLAB_HOSTED", "1")
+    at = hosted_app("page_data", str(tmp_path)).run()
+    assert not at.exception and not at.error
+    assert at.selectbox(key="data_source").value == "sample" and {"Bars", "Sessions"} <= {m.label for m in at.metric}
+    at.selectbox(key="data_source").set_value("file").run()
+    assert "data_path" not in {w.key for w in at.text_input}  # no path on the server can be typed
+
+
+def test_requirements_pin_the_declared_dependencies() -> None:
+    """`requirements.txt` (what the online demo installs) covers pyproject.toml, at versions it allows."""
+    tomllib = pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
+    requirement = pytest.importorskip("packaging.requirements")
+
+    root = Path(__file__).parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    declared = [requirement.Requirement(d) for d in [*project["dependencies"],
+                                                     *project["optional-dependencies"]["ui"]]]  # fmt: skip
+    lines = (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    pins = dict(line.split("==") for line in lines if line.strip() and not line.startswith("#"))
+    for dependency in declared:
+        assert dependency.name in pins, f"{dependency.name} is missing from requirements.txt"
+        assert dependency.specifier.contains(pins[dependency.name]), f"{dependency.name}=={pins[dependency.name]}"

@@ -30,7 +30,7 @@ def no_errors(at: AppTest) -> None:
     assert not at.error, [e.value for e in at.error]
 
 
-@pytest.mark.parametrize("page", ["page_backtest", "page_optimize", "page_chart"])
+@pytest.mark.parametrize("page", ["page_data", "page_backtest", "page_optimize", "page_live"])
 def test_every_page_renders(page: str) -> None:
     at = page_app(page).run()
     no_errors(at)
@@ -124,13 +124,73 @@ def test_optimization_ranges_build_the_grid() -> None:
     assert "size_mode: fixed, notional, equity_pct, risk" in caption
 
 
-def test_chart_page_draws_a_session() -> None:
-    at = page_app("page_chart").run()
-    at.selectbox(key="chart_source").set_value("file").run()
-    at.text_input(key="chart_path").set_value(str(FIXTURES / "aapl_1m.parquet")).run()
-    next(b for b in at.button if b.label == "Draw").click().run()
+def test_data_page_analyzes_the_chosen_period() -> None:
+    def tile(at: AppTest, label: str) -> str:
+        return str(next(m.value for m in at.metric if m.label == label))
+
+    at = page_app("page_data").run()  # the landing page: the bundled sample, without a click
     no_errors(at)
-    assert at.get("imgs") or at.get("download_button")
+    assert tile(at, "Bars") == "5,800" and tile(at, "Sessions") == "30" and tile(at, "Bar interval") == "2 min"
+    assert {"Returns", "Intraday profile", "Sessions", "Quality", "Bars"} <= {t.label for t in at.tabs}
+    # the slider narrows the period: every figure follows
+    last = at.slider[0].value[1]
+    at.slider[0].set_range(last - pd.Timedelta(hours=12), last).run()  # the last session
+    no_errors(at)
+    assert tile(at, "Bars") == "195" and tile(at, "Sessions") == "1"
+    # several symbols: one line each, and the correlation of their returns
+    at.text_input(key="data_symbols").set_value("SPY, QQQ").run()
+    no_errors(at)
+    assert at.radio(key="data_symbol").options == ["SPY", "QQQ"]
+    assert any(list(d.value.columns) == ["SPY", "QQQ"] for d in at.dataframe)
+    # a file, with bars around the clock
+    at.text_input(key="data_symbols").set_value("AAPL").run()
+    at.selectbox(key="data_source").set_value("file").run()
+    assert not at.metric and any("Upload a bars file" in i.value for i in at.info)
+    at.text_input(key="data_path").set_value(str(FIXTURES / "aapl_1m.parquet")).run()
+    no_errors(at)
+    assert tile(at, "Bars") == "5,000" and tile(at, "Bar interval") == "1 min"
+
+
+def test_dataset_analysis() -> None:
+    from quantlab.analysis import dataset
+
+    # two New York sessions of 5-minute bars (13:30 UTC = 09:30 in January), the second one with a hole
+    index = pd.DatetimeIndex(
+        [*pd.date_range("2026-01-05 14:30", periods=12, freq="5min", tz="UTC"),
+         *pd.date_range("2026-01-06 14:30", periods=12, freq="5min", tz="UTC").delete([4, 5])]
+    )  # fmt: skip
+    close = pd.Series(100.0 + pd.RangeIndex(len(index)), index=index)
+    bars = pd.DataFrame({"open": close - 0.5, "high": close + 1, "low": close - 1, "close": close, "volume": 10.0})
+    frame = dataset.symbol_bars(bars, ["X"])["X"]
+    assert frame.index[0] == pd.Timestamp("2026-01-05 09:30")  # New York wall-clock time
+
+    figures = dataset.summary(frame)
+    assert figures["bars"] == 22 and figures["sessions"] == 2 and figures["interval"] == pd.Timedelta(minutes=5)
+    assert figures["return_pct"] == pytest.approx(21.0) and figures["session_volume"] == 110.0
+    assert len(dataset.intraday_returns(frame)) == 20  # the overnight return is left out
+
+    table = dataset.sessions(frame)
+    assert list(table["bars"]) == [12, 10] and table["open"].iloc[0] == 99.5 and table["close"].iloc[0] == 111.0
+    assert table["return_pct"].iloc[1] == pytest.approx((121 / 111 - 1) * 100)
+
+    checks = dataset.quality(frame)
+    assert checks["missing_bars"] == 2 and checks["incomplete_sessions"] == 1
+    assert checks["largest_gap"] == pd.Timedelta(minutes=15) and checks["inconsistent_bars"] == 0
+    assert dataset.quality(frame.assign(high=frame["close"] - 2))["inconsistent_bars"] == 22
+
+    profile = dataset.intraday_profile(frame)
+    assert list(profile.index[:2]) == ["09:30", "09:35"] and profile["volume"].iloc[0] == 10.0
+    assert dataset.return_stats(dataset.intraday_returns(frame))["positive_pct"] == 100.0
+
+    # the multi-symbol layout gives one frame per symbol; a symbol absent from the data is refused
+    pair = pd.read_parquet(FIXTURES / "aapl_msft_2m.parquet")
+    frames = dataset.symbol_bars(pair, ["AAPL", "MSFT"])
+    assert list(frames["MSFT"].columns) == ["open", "high", "low", "close", "volume"]
+    assert dataset.return_correlation(frames).loc["AAPL", "MSFT"] == pytest.approx(
+        dataset.intraday_returns(frames["AAPL"]).corr(dataset.intraday_returns(frames["MSFT"]))
+    )
+    with pytest.raises(ValueError, match="No bars for NVDA"):
+        dataset.symbol_bars(pair, ["AAPL", "NVDA"])
 
 
 def test_charts_build_valid_specs() -> None:
@@ -144,8 +204,18 @@ def test_charts_build_valid_specs() -> None:
         charts.trade_pnl_chart(trades),
         charts.value_bars(pd.Series([1.0, 2.0], index=["x", "y"]), "v", "k"),
         charts.time_line(pd.Series(index), equity.reset_index(drop=True), "v"),
+        charts.price_chart({"A": equity, "B.C": equity * 2}, "v"),
+        charts.volume_chart(equity),
+        charts.histogram(equity, "v"),
+        charts.signed_bars(equity.diff().fillna(-1.0), "v", "k"),
+        charts.value_bars(equity, "v", "k", ticks=[str(index[0])]),
     ):
         assert isinstance(chart, alt.TopLevelMixin)
         chart.to_dict()
     # New York wall-clock times, naive
     assert charts.exchange_time(index)[0] == pd.Timestamp("2026-01-05 09:30")
+    # trading-time axis: one tick per session when there are many, per hour otherwise
+    days = pd.DatetimeIndex([d + pd.Timedelta(minutes=m) for d in pd.date_range("2026-01-05 09:30", periods=3)
+                             for m in (0, 30, 60)])  # fmt: skip
+    assert charts._bar_ticks(days) == {0: "Jan 05", 3: "Jan 06", 6: "Jan 07"}
+    assert charts._bar_ticks(days[:3]) == {0: "Jan 05 09:30", 1: "10:00"}

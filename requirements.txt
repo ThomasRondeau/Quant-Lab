@@ -1,0 +1,13 @@
+# Environment of the online demo (Streamlit Community Cloud installs this file, not pyproject.toml).
+# The versions are the ones the test suite runs on; tests/test_hosting.py checks them against pyproject.toml.
+numpy==2.2.6
+pandas==2.3.3
+scikit-learn==1.7.2
+xgboost==3.0.2
+statsmodels==0.14.2
+matplotlib==3.10.8
+mplfinance==0.12.10b0
+yfinance==1.2.0
+pyarrow==25.0.1
+streamlit==1.65.0
+altair==6.2.2
