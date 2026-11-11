@@ -81,7 +81,7 @@ python -m quantlab ui
 The interface deploys as is on [Streamlit Community Cloud](https://share.streamlit.io) (free):
 
 1. Create an app on the repository, branch `main`, main file `quantlab/ui/app.py`.
-2. In the advanced settings, keep Python 3.12 and paste the secret `QUANTLAB_HOSTED = "1"`.
+2. In the advanced settings, choose Python 3.12 (the pinned versions have no wheels for the newest Python, where the install fails) and paste the secret `QUANTLAB_HOSTED = "1"`.
 
 The secret turns the hosted mode on: bundled data, capped computations, nothing written on the server (see [the architecture](docs/ARCHITECTURE.md)). The cloud installs `requirements.txt`, pinned to the versions the tests run on. Every push to `main` redeploys the app.
 
