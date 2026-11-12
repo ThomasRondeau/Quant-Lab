@@ -43,7 +43,15 @@ from quantlab.strategies.params import (  # noqa: E402
 )
 from quantlab.strategies.registry import STRATEGIES, build_strategy  # noqa: E402
 from quantlab.ui import charts  # noqa: E402
-from quantlab.ui.hosting import ComputeSlots, LimitError, Limits, hosted, preset_slug  # noqa: E402
+from quantlab.ui.hosting import (  # noqa: E402
+    DEFAULT_MARKET_PRODUCT,
+    ComputeSlots,
+    LimitError,
+    Limits,
+    hosted,
+    market_product,
+    preset_slug,
+)
 
 logger = logging.getLogger("quantlab.ui")
 
@@ -798,9 +806,55 @@ def visitor_id() -> str:
 
 
 def page_live() -> None:
+    st.header("Live trading")
+    market_tab, simulated_tab = st.tabs(["Market: paper trading on real data", "Simulated sessions"])
+    with market_tab:
+        live_market()
+    with simulated_tab:
+        live_simulated()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def market_probe(product: str) -> dict[str, Any]:
+    """The last closed candles of `product`, read from the exchange (shared by every visitor for 30 seconds)."""
+    from quantlab.data import market
+
+    try:
+        end = market.last_closed(pd.Timestamp.now(tz="UTC"))
+        bars = market.fetch_candles(product, end - 4 * market.INTERVAL, end)
+    except market.MarketDataError as exc:
+        return {"ok": False, "error": str(exc)}
+    if bars.empty:
+        return {"ok": False, "error": f"No {product} candle in the last five minutes."}
+    return {"ok": True, "time": bars.index[-1], "close": float(bars["close"].iloc[-1])}
+
+
+def live_market() -> None:
+    st.caption(
+        "Paper trading on real market data: the strategies trade the 1-minute candles of a crypto exchange "
+        "(Coinbase, public data, no account) as they close. The broker is simulated: no order is sent anywhere."
+    )
+    product = market_product()
+    if product is None:
+        if hosted():
+            st.info("The market session is off on this server.")
+            return
+        product = st.text_input("Product", value=DEFAULT_MARKET_PRODUCT, key="market_product").strip().upper()
+        if not st.button("Check the market data", key="market_check"):
+            return
+    status = market_probe(product)
+    if status["ok"]:
+        st.success(
+            f"Market data reachable: {product} closed at {status['close']:,.2f} $ on the "
+            f"{status['time']:%H:%M} UTC candle."
+        )
+    else:
+        st.error(status["error"])
+
+
+def live_simulated() -> None:
     from quantlab.live.session import SessionLimitError, SimulatedConfig
 
-    st.header("Live trading (simulated)")
     st.caption(
         "A strategy trades a real-time stream of bars, with the same engine as a live session: orders, fills, "
         "protective stops and targets, positions, journal and persisted state. The bars replay the end of the "

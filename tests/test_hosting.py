@@ -13,7 +13,7 @@ from streamlit.testing.v1 import AppTest
 
 from quantlab.cli import build_parser
 from quantlab.data.loading import load_bars, sample_symbols
-from quantlab.ui.hosting import ComputeSlots, LimitError, Limits, hosted, preset_slug
+from quantlab.ui.hosting import ComputeSlots, LimitError, Limits, hosted, market_product, preset_slug
 
 
 def test_bundled_samples_load_offline() -> None:
@@ -129,6 +129,47 @@ def test_hosted_live_page_identifies_the_visitor(monkeypatch: pytest.MonkeyPatch
     visitor = visitor if isinstance(visitor, str) else visitor[0]
     assert len(visitor) == 12 and int(visitor, 16) >= 0
     assert at.number_input(key="live_bars").max == 975  # bounded sessions online
+
+
+def test_market_session_is_off_unless_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("QUANTLAB_MARKET", raising=False)
+    assert market_product() is None
+    for value, product in (("1", "SOL-USD"), ("ltc-usd", "LTC-USD"), ("off", None), ("", None)):
+        monkeypatch.setenv("QUANTLAB_MARKET", value)
+        assert market_product() == product
+
+
+def test_hosted_market_tab_reads_the_exchange_only_when_asked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import pandas as pd
+
+    import quantlab.ui.app as app
+    from quantlab.data import market
+
+    calls: list[str] = []
+
+    def candles(product: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        calls.append(product)
+        if product != "SOL-USD":
+            raise market.MarketDataError("blocked by the exchange")
+        row = {"open": 82.4, "high": 82.5, "low": 82.3, "close": 82.45, "volume": 120.0}
+        return pd.DataFrame([row], index=pd.DatetimeIndex([end], name="Datetime"))
+
+    monkeypatch.setattr(app, "PRESETS_DIR", app.PRESETS_DIR)  # the script below replaces it: restored after
+    monkeypatch.setattr(market, "fetch_candles", candles)
+    monkeypatch.setenv("QUANTLAB_HOSTED", "1")
+    monkeypatch.delenv("QUANTLAB_MARKET", raising=False)
+    app.market_probe.clear()
+    at = hosted_app("page_live", str(tmp_path)).run()
+    assert not at.exception and not calls and any("off on this server" in i.value for i in at.info)
+
+    monkeypatch.setenv("QUANTLAB_MARKET", "1")
+    at = hosted_app("page_live", str(tmp_path)).run()
+    assert calls == ["SOL-USD"] and any("SOL-USD closed at 82.45 $" in s.value for s in at.success)
+
+    monkeypatch.setenv("QUANTLAB_MARKET", "DOGE-USD")
+    at = hosted_app("page_live", str(tmp_path)).run()
+    assert not at.exception and any("blocked by the exchange" in e.value for e in at.error)
+    app.market_probe.clear()
 
 
 def test_hosted_data_page_is_the_landing_page(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

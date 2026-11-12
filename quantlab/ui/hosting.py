@@ -24,8 +24,23 @@ from dataclasses import dataclass, field
 HOSTED_ENV = "QUANTLAB_HOSTED"
 
 
+#: environment variable that starts the shared paper-trading session on real market data with the app: the
+#: product to trade (`SOL-USD`), or `1` for the default one. Unset, the app never contacts the exchange by itself.
+MARKET_ENV = "QUANTLAB_MARKET"
+DEFAULT_MARKET_PRODUCT = "SOL-USD"
+_ON, _OFF = ("1", "true", "yes", "on"), ("", "0", "false", "no", "off")
+
+
 def hosted() -> bool:
-    return os.environ.get(HOSTED_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get(HOSTED_ENV, "").strip().lower() in _ON
+
+
+def market_product() -> str | None:
+    """Product of the market session that starts with the app, or None when it is off."""
+    value = os.environ.get(MARKET_ENV, "").strip()
+    if value.lower() in _OFF:
+        return None
+    return DEFAULT_MARKET_PRODUCT if value.lower() in _ON else value.upper()
 
 
 class LimitError(ValueError):
