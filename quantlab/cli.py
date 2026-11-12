@@ -14,6 +14,7 @@ quantlab command line: one entry point for strategy research.
     quantlab optimize --strategy trend --symbol AAPL --range sma_fast=5:20:5 --grid sma_slow=30,50,100 \\
                       --train-size 3000 --validation-size 1000 --test-size 1000 --embargo 30
     quantlab live --strategy trend --symbol AAPL --source synthetic --speed 5      (simulated live trading)
+    quantlab live --strategy trend --symbol SOL-USD --source market        (paper trading on real crypto candles)
     quantlab replay --session NAME
     quantlab plot --symbol SPY --days 3
     quantlab ui                                     (graphical interface in the browser)
@@ -264,6 +265,7 @@ def cmd_optimize(args: argparse.Namespace) -> int:
 def cmd_live(args: argparse.Namespace) -> int:
     from datetime import datetime
 
+    from quantlab.data.market import MarketDataError
     from quantlab.live.session import SimulatedConfig, SimulatedSession
 
     if len(args.strategy) != 1:
@@ -283,17 +285,30 @@ def cmd_live(args: argparse.Namespace) -> int:
         slippage_bps=args.slippage_bps,
         data_source=args.data,
         days=args.days,
+        history_bars=args.history,
+        backfill_bars=args.backfill,
     )
     session_name = args.session or f"{name}_{'_'.join(args.symbol)}_{datetime.now():%Y%m%d_%H%M%S}"
     session = SimulatedSession(args.sessions_dir / session_name, config)
-    session.prepare()
+    try:
+        session.prepare()
+    except MarketDataError as exc:
+        raise SystemExit(str(exc)) from exc
     assert session.runner is not None
     session.runner.router.fill_listeners.append(
         lambda fill: logger.info(
             "%s fill %s %d %s @ %.2f", fill.timestamp, fill.order.side, fill.quantity, fill.order.symbol, fill.price
         )
     )
-    logger.info("Streaming %d bars at %g bars/s (Ctrl+C to stop)", config.live_bars, config.bars_per_second)
+    if config.source == "market":
+        logger.info(
+            "Paper trading on the real candles of %s: %d caught up, then one per minute, %d at most (Ctrl+C to stop)",
+            config.symbols[0],
+            config.backfill_bars,
+            config.live_bars,
+        )
+    else:
+        logger.info("Streaming %d bars at %g bars/s (Ctrl+C to stop)", config.live_bars, config.bars_per_second)
     try:
         runner = session.run()
     except KeyboardInterrupt:
@@ -423,11 +438,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbol", action="append", required=True, help="repeat for multi-symbol strategies")
     p.add_argument(
         "--source",
-        choices=("replay", "synthetic"),
+        choices=("replay", "synthetic", "market"),
         default="replay",
-        help="replay: the last bars of the data; synthetic: a random market continuing the data",
+        help="replay: the last bars of the data; synthetic: a random market continuing the data; "
+        "market: the real 1-minute candles of a crypto product (--symbol SOL-USD), read from Coinbase without key",
     )
     p.add_argument("--bars", type=int, default=975, help="bars to stream (975 = five sessions of 2-minute bars)")
+    p.add_argument("--history", type=int, default=720, help="market: candles the strategy is trained on")
+    p.add_argument("--backfill", type=int, default=360, help="market: candles of the last hours traded at once")
     p.add_argument("--speed", type=float, default=2.0, help="bars per second (0: as fast as possible)")
     p.add_argument("--seed", type=int, help="seed of the synthetic market")
     p.add_argument("--data", choices=SOURCES, default="sample", help="where the bars come from")

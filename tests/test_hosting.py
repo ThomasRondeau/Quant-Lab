@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -149,27 +150,33 @@ def test_hosted_market_tab_reads_the_exchange_only_when_asked(monkeypatch: pytes
 
     def candles(product: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         calls.append(product)
-        if product != "SOL-USD":
-            raise market.MarketDataError("blocked by the exchange")
-        row = {"open": 82.4, "high": 82.5, "low": 82.3, "close": 82.45, "volume": 120.0}
-        return pd.DataFrame([row], index=pd.DatetimeIndex([end], name="Datetime"))
+        raise market.MarketDataError("blocked by the exchange")
 
     monkeypatch.setattr(app, "PRESETS_DIR", app.PRESETS_DIR)  # the script below replaces it: restored after
     monkeypatch.setattr(market, "fetch_candles", candles)
     monkeypatch.setenv("QUANTLAB_HOSTED", "1")
     monkeypatch.delenv("QUANTLAB_MARKET", raising=False)
-    app.market_probe.clear()
+    app.simulated_sessions.clear()
+    # without the setting, a visitor cannot make the server contact the exchange
     at = hosted_app("page_live", str(tmp_path)).run()
     assert not at.exception and not calls and any("off on this server" in i.value for i in at.info)
+    assert not [b for b in at.button if "market session" in b.label]
 
+    # with it, the server starts the shared session by itself, and says so when the exchange does not answer
     monkeypatch.setenv("QUANTLAB_MARKET", "1")
     at = hosted_app("page_live", str(tmp_path)).run()
-    assert calls == ["SOL-USD"] and any("SOL-USD closed at 82.45 $" in s.value for s in at.success)
-
-    monkeypatch.setenv("QUANTLAB_MARKET", "DOGE-USD")
-    at = hosted_app("page_live", str(tmp_path)).run()
-    assert not at.exception and any("blocked by the exchange" in e.value for e in at.error)
-    app.market_probe.clear()
+    registry = app.simulated_sessions(True)
+    try:
+        assert not at.exception and registry.kept("market")
+        deadline = time.monotonic() + 60
+        while not any(e.error for e in registry.entries("market")) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        at.run()
+        assert calls and set(calls) == {"SOL-USD"}
+        assert any("blocked by the exchange" in e.value and "new attempt" in e.value for e in at.error)
+    finally:
+        registry.stop_all()
+        app.simulated_sessions.clear()
 
 
 def test_hosted_data_page_is_the_landing_page(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -3,7 +3,8 @@ quantlab graphical interface (Streamlit): everything the CLI does, plus charts.
 
     python -m quantlab ui            (or: python -m streamlit run quantlab/ui/app.py)
 
-Pages: Data (analysis of a set of bars), Backtest, Optimization (walk-forward), Live trading (simulated).
+Pages: Data (analysis of a set of bars), Backtest, Optimization (walk-forward), Live trading (paper trading on
+real market data, and simulated sessions).
 The pages call the same library functions as the CLI. With QUANTLAB_HOSTED=1 (the public demo), the inputs and the
 computations are restricted (`ui/hosting.py`).
 """
@@ -17,6 +18,8 @@ import logging
 import re
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -25,6 +28,34 @@ from typing import Any
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:  # `streamlit run` puts only this file's folder on the path
     sys.path.insert(0, str(_ROOT))
+
+
+def refresh_code(root: Path = _ROOT, package: str = "quantlab") -> bool:
+    """
+    A deployment replaces the files under the running server, which reruns this script but keeps the modules it
+    imported: the new page code would then run against the old library. When a file of `package` changed since
+    the previous run, the background sessions are stopped, the modules of `package` forgotten and the caches
+    emptied, so that everything below loads the new code. Returns True when it did.
+    """
+    state = vars(sys).setdefault("_quantlab_code", {"lock": threading.Lock(), "stamps": {}, "registries": []})
+    with state["lock"]:
+        stamp = max((path.stat().st_mtime_ns for path in (root / package).rglob("*.py")), default=0)
+        previous, state["stamps"][package] = state["stamps"].get(package), stamp
+        if previous is None or previous == stamp:
+            return False
+        for registry in state["registries"]:
+            registry.stop_all()
+        state["registries"].clear()
+        for name in [n for n in sys.modules if n == package or n.startswith(package + ".")]:
+            del sys.modules[name]
+    import streamlit
+
+    streamlit.cache_resource.clear()
+    streamlit.cache_data.clear()
+    return True
+
+
+refresh_code()  # before the imports of the library, below
 
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
@@ -784,13 +815,16 @@ def simulated_sessions(is_hosted: bool) -> Any:
     from quantlab.live.session import SimulatedSessions
 
     if is_hosted:
-        return SimulatedSessions(
+        registry = SimulatedSessions(
             Path(tempfile.gettempdir()) / "quantlab_sessions",
             max_running=int(HOSTED_SESSIONS["max_running"]),
             per_owner=int(HOSTED_SESSIONS["per_owner"]),
             prepare_guard=compute_slots().acquire,
         )
-    return SimulatedSessions(SESSIONS_DIR)
+    else:
+        registry = SimulatedSessions(SESSIONS_DIR)
+    vars(sys)["_quantlab_code"]["registries"].append(registry)  # stopped by `refresh_code` when the code changes
+    return registry
 
 
 def visitor_id() -> str:
@@ -814,42 +848,127 @@ def page_live() -> None:
         live_simulated()
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def market_probe(product: str) -> dict[str, Any]:
-    """The last closed candles of `product`, read from the exchange (shared by every visitor for 30 seconds)."""
-    from quantlab.data import market
+#: the shared paper-trading session on real market data: two rule-based strategies in one account, each entry
+#: sized at $20,000 (10 shares would not show on $100,000). 720 candles to fit on, the last 6 hours traded at once
+#: when it starts, then 24 hours of live candles before it starts again with a fresh account.
+MARKET_OWNER = "market"
+MARKET_SIZE = {"size_mode": "notional", "size_value": 20_000.0}
+MARKET_STRATEGIES = ("trend", "mean_reversion")
+MARKET_BARS = {"history_bars": 720, "backfill_bars": 360, "live_bars": 1440}
 
-    try:
-        end = market.last_closed(pd.Timestamp.now(tz="UTC"))
-        bars = market.fetch_candles(product, end - 4 * market.INTERVAL, end)
-    except market.MarketDataError as exc:
-        return {"ok": False, "error": str(exc)}
-    if bars.empty:
-        return {"ok": False, "error": f"No {product} candle in the last five minutes."}
-    return {"ok": True, "time": bars.index[-1], "close": float(bars["close"].iloc[-1])}
+
+def market_config(product: str) -> Any:
+    from quantlab.data.market import check_product
+    from quantlab.live.session import SimulatedConfig
+
+    first, *others = MARKET_STRATEGIES
+    return SimulatedConfig(
+        strategy=first,
+        symbols=(check_product(product),),
+        params=MARKET_SIZE,
+        extra_strategies={name: MARKET_SIZE for name in others},
+        source="market",
+        history_bars=MARKET_BARS["history_bars"],
+        backfill_bars=MARKET_BARS["backfill_bars"],
+        live_bars=MARKET_BARS["live_bars"],
+    )
 
 
 def live_market() -> None:
+    from quantlab.data.market import MarketDataError
+
     st.caption(
-        "Paper trading on real market data: the strategies trade the 1-minute candles of a crypto exchange "
-        "(Coinbase, public data, no account) as they close. The broker is simulated: no order is sent anywhere."
+        "Paper trading on real market data. Two strategies (trend following and mean reversion) trade the "
+        "1-minute candles of a crypto exchange as they close: public Coinbase data, read without an account. "
+        "The broker is simulated and no order is sent anywhere. Fees of 1 bp and slippage of 1 bp are assumed, "
+        "as everywhere else here: real crypto trading costs are far higher."
     )
+    registry = simulated_sessions(hosted())
     product = market_product()
-    if product is None:
-        if hosted():
-            st.info("The market session is off on this server.")
+    if product is not None:  # the server keeps one session running, shared by every visitor
+        try:
+            registry.keep_running("market", market_config(product), MARKET_OWNER)
+        except MarketDataError as exc:
+            st.error(str(exc))
             return
-        product = st.text_input("Product", value=DEFAULT_MARKET_PRODUCT, key="market_product").strip().upper()
-        if not st.button("Check the market data", key="market_check"):
-            return
-    status = market_probe(product)
-    if status["ok"]:
-        st.success(
-            f"Market data reachable: {product} closed at {status['close']:,.2f} $ on the "
-            f"{status['time']:%H:%M} UTC candle."
-        )
+    elif hosted():
+        st.info("The market session is off on this server.")
+        return
+    elif registry.kept(MARKET_OWNER):
+        if st.button("Stop the market session", key="market_stop"):
+            registry.stop_kept(MARKET_OWNER)
+            for _ in range(60):  # the session ends within a heartbeat
+                if not registry.kept(MARKET_OWNER):
+                    break
+                time.sleep(0.05)
+            st.rerun()  # draw the Start form again
     else:
-        st.error(status["error"])
+        c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
+        typed = c1.text_input("Product", value=DEFAULT_MARKET_PRODUCT, key="market_product", help="A Coinbase "
+                              "product priced between a few dollars and a few hundred, such as SOL-USD or LTC-USD: "
+                              "quantities are whole units, and prices are rounded to the cent.")  # fmt: skip
+        if c2.button("Start the market session", type="primary", key="market_start"):
+            try:
+                registry.keep_running("market", market_config(typed), MARKET_OWNER)
+            except MarketDataError as exc:
+                show_error(LimitError(str(exc)))
+            else:
+                st.rerun()  # draw the Stop button instead of this form
+        if not registry.kept(MARKET_OWNER) and not registry.entries(MARKET_OWNER):
+            return
+    market_monitor()
+
+
+@st.fragment(run_every=5)
+def market_monitor() -> None:
+    entries = sorted(simulated_sessions(hosted()).entries(MARKET_OWNER), key=lambda e: e.started, reverse=True)
+    if not entries:
+        st.caption("Starting the market session…")
+        return
+    with st.container(border=True):
+        market_panel(entries[0])
+
+
+def market_panel(entry: Any) -> None:
+    config, feed = entry.session.config, entry.session.feed
+    names = " + ".join(STRATEGY_LABELS[name] for name in config.strategies)
+    st.markdown(f"**{config.symbols[0]}** · {names} · status **{entry.status}**")
+    if entry.error:
+        st.error(f"{entry.error} A new attempt starts within a minute.")
+        return
+    if feed is not None and feed.last_error:
+        st.warning(f"The market data is interrupted; the session goes on when it is back. {feed.last_error}")
+    view = shared_session_view(str(entry.path), session_stamp(entry.path))
+    if not view.bars:
+        st.caption("Reading the last candles and training the strategies…")
+        return
+    st.caption(
+        f"The session started by trading the {config.backfill_bars} candles of the hours before, at once, and has "
+        f"traded every candle since as it closed: {view.bars} so far, the last one at "
+        f"{charts.exchange_time(pd.DatetimeIndex([view.last_bar]))[0]:%H:%M} New York time. "
+        "It starts again with a fresh account every 24 hours, and whenever the server wakes up."
+    )
+    session_view(view)
+    session_replay(entry)
+
+
+def session_stamp(path: Path) -> int:
+    """A number that changes whenever the files of a session do (journal, its write-ahead log, state)."""
+    stamps = []
+    for name in ("journal.sqlite", "journal.sqlite-wal", "state.json"):
+        try:
+            stamps.append((path / name).stat().st_mtime_ns)
+        except OSError:
+            continue
+    return max(stamps, default=0)
+
+
+@st.cache_data(max_entries=2, show_spinner=False)
+def shared_session_view(path: str, stamp: int) -> Any:
+    """The view of a session every visitor watches: read once per change of its files, not once per visitor."""
+    from quantlab.ui.live_view import read_session
+
+    return read_session(path)
 
 
 def live_simulated() -> None:
@@ -957,6 +1076,13 @@ def session_panel(entry: Any, expanded: bool) -> None:
     if not view.bars:
         st.caption("Training the strategy on the history…" if entry.status == "training" else "Waiting for bars…")
         return
+    session_view(view)
+    if not entry.alive:
+        session_replay(entry)
+
+
+def session_view(view: Any) -> None:
+    """Tiles, equity curve, open positions, activity and trades of a session."""
     unrealized = float(view.lots["unrealized P&L"].fillna(0).sum()) if not view.lots.empty else 0.0
     show_tiles(
         [
@@ -985,8 +1111,6 @@ def session_panel(entry: Any, expanded: bool) -> None:
         st.dataframe(activity, width="stretch", hide_index=True, height=300)
     if not view.closed_trades.empty and len(view.closed_trades) > 1:
         st.altair_chart(charts.trade_pnl_chart(view.closed_trades), width="stretch")
-    if not entry.alive:
-        session_replay(entry)
 
 
 def session_replay(entry: Any) -> None:

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
+
+#: tries of the final rename before giving up (10 ms apart)
+REPLACE_ATTEMPTS = 50
 
 
 class StateStore:
@@ -20,7 +24,15 @@ class StateStore:
             json.dump(state, f, indent=1, allow_nan=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, self.path)
+        for attempt in range(REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                # Windows refuses to replace a file that a reader (the interface) has open at that instant
+                if attempt == REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(0.01)
 
     def load(self) -> dict[str, Any] | None:
         if not self.path.exists():

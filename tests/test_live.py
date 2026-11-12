@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import time
 from pathlib import Path
 
@@ -10,7 +11,8 @@ import pytest
 
 from quantlab.analysis.replay import replay_session
 from quantlab.data.loading import load_bars
-from quantlab.live.feeds import PacedBarFeed, session_times, synthetic_bars
+from quantlab.data.market import MarketDataError
+from quantlab.live.feeds import LiveBarFeed, PacedBarFeed, session_times, synthetic_bars
 from quantlab.live.session import SessionLimitError, SimulatedConfig, SimulatedSession, SimulatedSessions
 from quantlab.runtime.journal import read_journal
 from quantlab.ui.live_view import describe_event, read_session
@@ -201,4 +203,288 @@ def test_live_page_runs_a_session_and_replays_it(tmp_path: Path) -> None:
         assert any(m.label == "Signal agreement" and m.value == "100.0 %" for m in at.metric)
     finally:
         app.SESSIONS_DIR = original
+        app.simulated_sessions.clear()
+
+
+# --- real market data (paper trading) ----------------------------------------------------------------------
+
+
+class Clock:
+    """A clock that moves `step` seconds each time it is read: the feed never waits for real minutes."""
+
+    def __init__(self, start: pd.Timestamp, step: float = 7.0) -> None:
+        self.time, self.step = start, pd.Timedelta(seconds=step)
+
+    def __call__(self) -> pd.Timestamp:
+        self.time += self.step
+        return self.time
+
+
+class Exchange:
+    """
+    A fake exchange: one candle per minute up to the current minute of `clock` (that one is still moving), with the
+    prices of the bundled AAPL sample. `quiet` minutes have no candle, and `down` makes the next requests fail.
+    """
+
+    def __init__(self, clock=None) -> None:  # type: ignore[no-untyped-def]
+        self.clock = clock or (lambda: pd.Timestamp.now(tz="UTC"))
+        self.sample = load_bars(["AAPL"], "sample", 60)[["open", "high", "low", "close", "volume"]]
+        self.quiet: set[pd.Timestamp] = set()
+        self.down = 0
+        self.asked: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []  # (clock, start, end)
+
+    def fetch(self, product: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        now = self.clock()
+        self.asked.append((now, start, end))
+        if self.down:
+            self.down -= 1
+            raise MarketDataError("exchange unreachable")
+        times = [t for t in pd.date_range(start, min(end, now.floor("min")), freq="min") if t not in self.quiet]
+        rows = [self.sample.iloc[int(t.timestamp() // 60) % len(self.sample)].to_numpy() for t in times]
+        return pd.DataFrame(rows, index=pd.DatetimeIndex(times, name="Datetime"), columns=list(self.sample.columns))
+
+
+T0 = pd.Timestamp("2026-11-12 12:00", tz="UTC")
+MINUTE = pd.Timedelta(minutes=1)
+
+
+def live_feed(exchange: Exchange, backfill: int = 5, max_bars: int = 4, **options: float) -> LiveBarFeed:
+    history = exchange.fetch("SOL-USD", T0 - backfill * MINUTE, T0 - MINUTE)
+    exchange.asked.clear()
+    return LiveBarFeed(
+        lambda start, end: exchange.fetch("SOL-USD", start, end),
+        history,
+        max_bars,
+        heartbeat=0,
+        clock=exchange.clock,
+        **options,
+    )
+
+
+def test_live_feed_catches_up_then_delivers_each_candle_once_it_is_closed() -> None:
+    exchange = Exchange(Clock(T0 + pd.Timedelta(seconds=20)))
+    feed = live_feed(exchange)
+    assert feed.total == 9 and feed.status == "catching up"
+
+    delivered: list[tuple[pd.Timestamp, pd.Timestamp]] = []  # (bar, clock when it was delivered)
+    for bar in feed:
+        if bar is not None:
+            delivered.append((pd.Timestamp(bar.name), exchange.clock.time))
+
+    times = [t for t, _ in delivered]
+    assert times == list(pd.date_range(T0 - 5 * MINUTE, periods=9, freq="min"))  # no hole, no duplicate
+    assert feed.delivered == 9 and feed.status == "ended" and feed.last_bar == times[-1] and feed.last_error is None
+    # a live candle is delivered once its minute has been over for `delay` (10 s): never the moving one
+    assert all(clock >= bar + MINUTE + pd.Timedelta(seconds=10) for bar, clock in delivered[5:])
+    assert all(end + MINUTE + pd.Timedelta(seconds=10) <= now for now, _, end in exchange.asked)
+    # one request per candle here: the candle is there when it is asked for
+    assert len(exchange.asked) == 4
+
+
+def test_live_feed_skips_quiet_minutes_and_never_asks_the_same_range_twice() -> None:
+    exchange = Exchange(Clock(T0 + pd.Timedelta(seconds=20)))
+    exchange.quiet = {T0 + MINUTE}
+    feed = live_feed(exchange, max_bars=3)
+    times = [pd.Timestamp(bar.name) for bar in feed if bar is not None][5:]
+    assert times == [T0, T0 + 2 * MINUTE, T0 + 3 * MINUTE]
+    retries = [(start, end) for _, start, end in exchange.asked if end == T0 + MINUTE]
+    # the exchange caches every URL for minutes: each retry of the quiet minute has its own range
+    assert len(retries) > 1 and len(set(retries)) == len(retries)
+
+
+def test_live_feed_survives_an_outage_and_delivers_what_it_missed() -> None:
+    exchange = Exchange(Clock(T0 + pd.Timedelta(seconds=20)))
+    feed = live_feed(exchange, max_bars=6, retry=30, max_retry=60)
+    seen: list[pd.Timestamp] = []
+    errors: list[str | None] = []
+    heartbeats = 0
+    for bar in feed:
+        if bar is None:
+            heartbeats += 1
+            errors.append(feed.last_error)
+        else:
+            seen.append(pd.Timestamp(bar.name))
+            if len(seen) == 6:  # the first live candle went through: the exchange goes down
+                exchange.down = 4
+    assert seen[5:] == list(pd.date_range(T0, periods=6, freq="min"))  # nothing lost
+    assert any(e and "exchange unreachable" in e for e in errors) and feed.last_error is None and heartbeats > 10
+    failed = [now for now, _, _ in exchange.asked][1:5]
+    gaps = [(b - a).total_seconds() for a, b in itertools.pairwise(failed)]
+    assert gaps == sorted(gaps) and gaps[0] >= 30 and gaps[-1] >= 60  # retries further and further apart
+
+
+def test_live_feed_stops() -> None:
+    exchange = Exchange(Clock(T0 + pd.Timedelta(seconds=20)))
+    feed = live_feed(exchange, max_bars=1000)
+    count = 0
+    for bar in feed:
+        count += bar is not None
+        if count == 7:
+            feed.stop()
+    assert feed.stopped and feed.delivered == 7 < feed.total
+
+
+def test_market_session_trades_real_candles_on_paper_and_replays_exactly(tmp_path: Path) -> None:
+    exchange = Exchange(Clock(T0 + pd.Timedelta(seconds=20), step=20))
+    candles = exchange.fetch("SOL-USD", T0 - 299 * MINUTE, T0 - MINUTE)
+    size = {"size_mode": "notional", "size_value": 20_000.0}
+    config = SimulatedConfig(
+        "trend",
+        ("SOL-USD",),
+        params=size,
+        extra_strategies={"mean_reversion": size},
+        source="market",
+        live_bars=60,
+        history_bars=179,
+        backfill_bars=120,
+    )
+    assert list(config.strategies) == ["trend", "mean_reversion"]
+    session = SimulatedSession(tmp_path / "market", config)
+    session.prepare(bars=candles, fetch=exchange.fetch)
+    assert isinstance(session.feed, LiveBarFeed) and session.progress == (0, 180)
+    session.feed.clock, session.feed.heartbeat = exchange.clock, 0
+
+    runner = session.run()
+
+    assert session.status == "finished" and session.progress == (180, 180)
+    journal = read_journal(session.files.journal_path)
+    assert len(journal.bars) == 180 and journal.bars.index[-1] == T0 + 59 * MINUTE
+    assert session.files.meta()["source"] == "market" and len(session.files.load_warmup()) == 179
+    assert {"TrendFollowingStrategy", "MeanReversionStrategy"} == set(session.files.meta()["strategies"])
+    assert runner.router.trades and all(t.symbol == "SOL-USD" for t in runner.router.trades)
+    assert any(t.quantity > 50 for t in runner.router.trades)  # sized by notional, not 10 shares
+    report = replay_session(session.files.root)
+    assert report.summary["signal_agreement_pct"] == 100.0 and report.summary["signals_live"] > 0
+    assert report.summary["pnl_net_live"] == pytest.approx(report.summary["pnl_net_replay"])
+
+
+def test_market_session_needs_one_product_and_a_history(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="one product"):
+        SimulatedConfig("pair", ("SOL-USD", "ETH-USD"), source="market")
+    exchange = Exchange(Clock(T0))
+    session = SimulatedSession(tmp_path / "m", SimulatedConfig("trend", ("SOL-USD",), source="market"))
+    with pytest.raises(ValueError, match="not enough for a history"):
+        session.prepare(bars=exchange.fetch("SOL-USD", T0 - 99 * MINUTE, T0 - MINUTE), fetch=exchange.fetch)
+    with pytest.raises(MarketDataError, match="product name"):
+        SimulatedSession(tmp_path / "n", SimulatedConfig("trend", ("AAPL",), source="market")).prepare()
+
+
+def test_registry_keeps_a_session_running(tmp_path: Path) -> None:
+    registry = SimulatedSessions(tmp_path, max_running=1, per_owner=1)
+    quick = SimulatedConfig("trend", ("AAPL",), live_bars=30, bars_per_second=0)
+    assert registry.keep_running("shared", quick, owner="market", keep=2)
+    assert not registry.keep_running("shared", quick, owner="market") and registry.kept("market")
+    # a session that ended is replaced by a new one, and only the last folders are kept
+    names: set[str] = set()
+
+    def several_sessions() -> bool:
+        names.update(e.name for e in registry.entries("market"))
+        return len(names) >= 4
+
+    wait_until(several_sessions)
+    assert len(registry.entries("market")) <= 2 and len(list((tmp_path / "market").iterdir())) <= 2
+    # the kept sessions are outside the limits of the visitors
+    visitor = registry.start("mine", quick, "alice")
+    registry.stop_kept("market")
+    wait_until(lambda: not registry.kept("market") and not visitor.alive)
+    assert all(not e.alive for e in registry.entries("market")) and visitor.status == "finished"
+
+
+def test_registry_retries_a_kept_session_that_fails(tmp_path: Path) -> None:
+    registry = SimulatedSessions(tmp_path)
+    broken = SimulatedConfig("trend", ("NOPE",), live_bars=10, bars_per_second=0)
+    registry.keep_running("shared", broken, owner="market", retry_seconds=0.05, keep=1)
+    seen: set[str] = set()
+
+    def several_attempts() -> bool:
+        seen.update(e.name for e in registry.entries("market") if e.status == "error")
+        return len(seen) >= 3
+
+    wait_until(several_attempts)
+    registry.stop_kept("market")
+    wait_until(lambda: not registry.kept("market"))
+    assert len(registry.entries("market")) == 1  # the failed attempts do not pile up
+
+
+def market_page(monkeypatch: pytest.MonkeyPatch, sessions: Path, fresh: bool = True) -> tuple[Exchange, object]:
+    """The live page on a fake exchange that follows the real clock: (exchange, AppTest)."""
+    from streamlit.testing.v1 import AppTest
+
+    import quantlab.ui.app as app
+    from quantlab.data import market
+
+    def script() -> None:
+        import quantlab.ui.app as app
+
+        app.page_live()
+
+    exchange = Exchange()
+    if fresh:
+        monkeypatch.setattr(market, "fetch_candles", exchange.fetch)
+        monkeypatch.setattr(app, "SESSIONS_DIR", sessions)
+        monkeypatch.setattr(app, "MARKET_BARS", {"history_bars": 200, "backfill_bars": 90, "live_bars": 5})
+        app.simulated_sessions.clear()
+    return exchange, AppTest.from_function(script, default_timeout=120)
+
+
+def test_market_tab_shows_the_session_shared_by_every_visitor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pytest.importorskip("streamlit")
+    import quantlab.ui.app as app
+
+    monkeypatch.setenv("QUANTLAB_MARKET", "1")
+    _, page = market_page(monkeypatch, tmp_path)
+    at = page.run()  # type: ignore[attr-defined]
+    registry = app.simulated_sessions(False)
+    try:
+        assert not at.exception and registry.kept("market")
+        wait_until(lambda: any(read_session(e.path).bars >= 90 for e in registry.entries("market")))
+        (entry,) = registry.entries("market")
+        at.run()
+        assert not at.exception and {"Equity", "Realized P&L", "Last bar"} <= {m.label for m in at.metric}
+        assert any("SOL-USD" in m.value and "Trend following + Mean reversion" in m.value for m in at.markdown)
+        assert any("90 candles of the hours before" in c.value for c in at.caption)
+        # caught up, it waits for the next real candle; the visitors cannot stop it
+        delivered, total = entry.session.progress
+        assert entry.alive and entry.session.feed.status == "live" and 90 <= delivered < total == 95
+        assert not [b for b in at.button if "market session" in b.label]
+        # the replay runs on the session as it is so far
+        next(b for b in at.button if b.label == "Replay in the backtester").click().run()
+        assert any(m.label == "Signal agreement" and m.value == "100.0 %" for m in at.metric)
+        # another visitor watches the same session: no second one is started
+        _, other_page = market_page(monkeypatch, tmp_path, fresh=False)
+        other = other_page.run()  # type: ignore[attr-defined]
+        assert not other.exception and "Equity" in {m.label for m in other.metric}
+        assert registry.entries("market") == [entry]
+    finally:
+        registry.stop_all()
+        wait_until(lambda: not registry.kept("market"))
+        app.simulated_sessions.clear()
+
+
+def test_market_tab_reads_the_exchange_only_once_started_locally(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pytest.importorskip("streamlit")
+    import quantlab.ui.app as app
+
+    monkeypatch.delenv("QUANTLAB_MARKET", raising=False)
+    exchange, page = market_page(monkeypatch, tmp_path)
+    at = page.run()  # type: ignore[attr-defined]
+    registry = app.simulated_sessions(False)
+    try:
+        assert not at.exception and not exchange.asked and not registry.kept("market")
+        at.text_input(key="market_product").set_value("not a product").run()
+        next(b for b in at.button if b.label == "Start the market session").click().run()
+        assert any("product name" in w.value for w in at.warning) and not registry.kept("market")
+        at.text_input(key="market_product").set_value("ltc-usd").run()
+        next(b for b in at.button if b.label == "Start the market session").click().run()
+        assert not at.exception and registry.kept("market")
+        wait_until(lambda: any(read_session(e.path).bars >= 90 for e in registry.entries("market")))
+        at.run()
+        assert any("LTC-USD" in m.value for m in at.markdown) and "Equity" in {m.label for m in at.metric}
+        next(b for b in at.button if b.label == "Stop the market session").click().run()
+        wait_until(lambda: not registry.kept("market"))
+        assert all(not e.alive for e in registry.entries("market"))
+    finally:
+        registry.stop_all()
         app.simulated_sessions.clear()

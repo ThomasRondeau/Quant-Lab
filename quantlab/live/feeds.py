@@ -4,18 +4,25 @@ Real-time bar feeds for simulated live trading.
 `PacedBarFeed` delivers bars one by one at a chosen pace (e.g. 2 bars per second: a 2-minute bar every half
 second, 240x real time), with heartbeats in between, exactly like a live feed would. The bars come from a
 replay of recorded data or from `synthetic_bars`, a random market generated on the fly.
+
+`LiveBarFeed` delivers the candles of a real market as they close (`data/market.py`), after the candles of the
+last hours.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import numpy as np
 import pandas as pd
 
+from quantlab.data.market import INTERVAL, MAX_CANDLES, MarketDataError, last_closed
 from quantlab.data.pairs import combine_symbols
+
+logger = logging.getLogger(__name__)
 
 #: New York regular session
 SESSION_OPEN, SESSION_CLOSE = pd.Timedelta(hours=9, minutes=30), pd.Timedelta(hours=16)
@@ -73,6 +80,116 @@ class PacedBarFeed:
             self.delivered += 1
             next_at = max(next_at + interval, time.monotonic()) if interval else 0.0
             yield bar
+
+
+def _now() -> pd.Timestamp:
+    return pd.Timestamp.now(tz="UTC")
+
+
+class LiveBarFeed:
+    """
+    A `BarFeed` on real market data. It first yields the `backfill` bars at once (the candles of the last hours,
+    so the session starts with a history), then every 1-minute candle as it closes, read with `fetch(start, end)`.
+
+    - A candle is asked for `delay` seconds after its minute ended, then every `poll` seconds until it is there.
+      In the first seconds after the close the exchange may still answer with an unfinished candle, hence the
+      delay. A minute without a trade has no candle: the next one is delivered when it comes.
+    - A failed request is retried after `retry` seconds, doubled at each failure up to `max_retry`; `last_error`
+      holds its message until a request succeeds.
+    - After an interruption, the candles missed are delivered at once (the last 290 at most).
+    - Heartbeats (None) are yielded at least every `heartbeat` seconds. The feed ends after `max_bars` live bars
+      or on `stop()`, which is thread-safe.
+    """
+
+    #: candles asked for at once after an interruption; the rest of the 300 allowed keeps the retries apart
+    CATCH_UP = MAX_CANDLES - 10
+
+    def __init__(
+        self,
+        fetch: Callable[[pd.Timestamp, pd.Timestamp], pd.DataFrame],
+        backfill: pd.DataFrame,
+        max_bars: int,
+        delay: float = 10.0,
+        poll: float = 5.0,
+        heartbeat: float = 0.25,
+        retry: float = 5.0,
+        max_retry: float = 60.0,
+        clock: Callable[[], pd.Timestamp] = _now,
+    ) -> None:
+        if max_bars < 1:
+            raise ValueError(f"max_bars must be >= 1 (got {max_bars}).")
+        self.fetch = fetch
+        self.backfill = backfill
+        self.max_bars = max_bars
+        self.delay = pd.Timedelta(seconds=delay)
+        self.poll = pd.Timedelta(seconds=poll)
+        self.heartbeat = heartbeat
+        self.retry, self.max_retry = retry, max_retry
+        self.clock = clock
+        self.delivered = 0
+        self.status = "catching up"
+        self.last_bar: pd.Timestamp | None = None
+        self.last_error: str | None = None
+        self._stop = threading.Event()
+
+    @property
+    def total(self) -> int:
+        return len(self.backfill) + self.max_bars
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _deliver(self, bar: pd.Series) -> pd.Series:
+        self.delivered += 1
+        self.last_bar = pd.Timestamp(bar.name)  # type: ignore[arg-type]
+        return bar
+
+    def __iter__(self) -> Iterator[pd.Series | None]:
+        for _, bar in self.backfill.iterrows():
+            if self._stop.is_set():
+                return
+            yield self._deliver(bar)
+        self.status = "live"
+        live, attempts, retry = 0, 0, self.retry
+        asked: pd.Timestamp | None = None
+        next_request: pd.Timestamp | None = None
+        while live < self.max_bars and not self._stop.is_set():
+            now = self.clock()
+            due = last_closed(now - self.delay)  # the newest candle that has been closed for `delay`
+            waiting = self.last_bar is None or due > self.last_bar
+            if waiting and (next_request is None or now >= next_request):
+                if due != asked:
+                    asked, attempts = due, 0
+                first = due - INTERVAL * (self.CATCH_UP - 1)
+                if self.last_bar is not None:
+                    first = max(first, self.last_bar + INTERVAL)
+                try:
+                    # every attempt has its own range, hence its own URL: the exchange caches each URL for minutes
+                    candles = self.fetch(first - INTERVAL * (attempts % 10), due)
+                except MarketDataError as exc:
+                    self.last_error = str(exc)
+                    logger.warning("Market data unavailable, next try in %.0f s: %s", retry, exc)
+                    next_request = now + pd.Timedelta(seconds=retry)
+                    retry = min(retry * 2, self.max_retry)
+                else:
+                    self.last_error, retry = None, self.retry
+                    attempts += 1
+                    next_request = now + self.poll
+                    if len(candles):
+                        candles = candles[(candles.index >= first) & (candles.index <= due)]
+                    for _, bar in candles.iterrows():
+                        if live >= self.max_bars or self._stop.is_set():
+                            break
+                        live += 1
+                        yield self._deliver(bar)
+                    continue
+            self._stop.wait(self.heartbeat)
+            yield None
+        self.status = "ended"
 
 
 def session_times(start: pd.Timestamp, n_bars: int, bar_minutes: int = 2) -> pd.DatetimeIndex:

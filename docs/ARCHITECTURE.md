@@ -18,12 +18,12 @@ Quant Lab is a research platform for intraday strategies built on technical indi
 
 The guiding principle: **one code path for backtest and live**. Features, models, strategies, sizing, exits, risk and order routing are identical in every mode. Only two components change:
 
-| Component | Backtest | Simulated live trading | Real live trading |
-|---|---|---|---|
-| Bar source (`BarFeed`) | `HistoricalBarFeed`, a replay of a DataFrame | `PacedBarFeed`, bars delivered in real time | a market-data feed (same protocol) |
-| Execution (`Broker`) | `SimulatedBroker` | `SimulatedBroker` | a broker connector (same protocol) |
+| Component | Backtest | Simulated live trading | Paper trading on real data | Real live trading |
+|---|---|---|---|---|
+| Bar source (`BarFeed`) | `HistoricalBarFeed`, a replay of a DataFrame | `PacedBarFeed`, recorded or synthetic bars delivered in real time | `LiveBarFeed`, the candles of a crypto exchange as they close | a market-data feed (same protocol) |
+| Execution (`Broker`) | `SimulatedBroker` | `SimulatedBroker` | `SimulatedBroker` | a broker connector (same protocol) |
 
-The first two modes ship with the platform. No market-data feed or broker connector is included yet: both are written against these two protocols ([CODE_GUIDE.md §5.5](CODE_GUIDE.md)).
+The first three modes ship with the platform. No broker connector is included: no order ever leaves the platform. A connector, or another market-data feed, is written against these two protocols ([CODE_GUIDE.md §5.5](CODE_GUIDE.md)).
 
 Any backtest-only optimization, such as precomputing the features, must be **proven identical** to the live path by a parity test.
 
@@ -49,6 +49,8 @@ The interface also runs as a public online demo. The environment variable `QUANT
 
 - runs simulated live sessions in a temporary folder: 3 at once across all visitors, 1 per visitor, 975 bars and 15 minutes at most. Ended sessions are deleted once they are an hour old, when a visitor starts a new one. A visitor is identified by a random id kept in the page URL, so a reload finds its sessions again;
 - shows a note in the sidebar, with a link to the source code.
+
+A second variable, `QUANTLAB_MARKET`, starts the paper-trading session on real market data with the server (§10.5). Its value is the product to trade, or `1` for SOL-USD. Without it, the server never contacts the exchange, and a visitor of the hosted demo cannot make it do so.
 
 Two protections apply in every mode, hosted or local:
 
@@ -465,13 +467,13 @@ Settings:
 
 ---
 
-## 10. Live sessions: simulated trading, journal, restart, replay
+## 10. Live sessions: simulated trading, journal, restart, replay, real market data
 
 A live session is the same runner on a real-time `BarFeed`, with a `Journal` and a `StateStore`. These parts of the runtime are independent of any broker.
 
 ### 10.0 Simulated live trading (`live/`)
 
-`quantlab live` and the "Live trading" page (§11.4) run one strategy on a real-time stream without any market connection:
+`quantlab live` and the "Simulated sessions" tab of the "Live trading" page (§11.4) run one strategy on a real-time stream without any market connection:
 
 ```
  bars (bundled sample, or any source) ──► split: history │ live bars
@@ -492,7 +494,7 @@ A live session is the same runner on a real-time `BarFeed`, with a `Journal` and
 
   N is 975 by default on the command line (five sessions of 2-minute bars) and 390 in the interface.
 - **Pace** (`PacedBarFeed`): a number of bars per second, 2 by default. On the command line, 0 means as fast as possible. Between two bars, the feed sends a heartbeat at least every 0.25 second, so that a stop request is seen at once.
-- **Data**: the bundled samples by default. The command line also takes yfinance (`--data yfinance`); the interface only uses the samples.
+- **Data**: the bundled samples by default. The command line also takes yfinance (`--data yfinance`); the interface only uses the samples. A third market, `market`, trades real candles instead: see §10.5.
 - **Synthetic market** (`synthetic_bars`):
   - log-normal returns with each symbol's realized volatility, correlated across symbols (0.8 by default, for pairs);
   - higher volatility near the open and the close;
@@ -573,6 +575,41 @@ The restart is a library procedure, and no command runs it yet: `SessionFiles.lo
 
 `bar_differences` also compares the live bars with history downloaded later, to spot data corrections made by the provider.
 
+### 10.5 Paper trading on real market data
+
+With the `market` source, the session of §10.0 trades the real 1-minute candles of a crypto product. Only market data is read: the broker stays the `SimulatedBroker`, and **no order is sent anywhere**. Nothing else changes: same runner, same journal, same state, same replay.
+
+```
+ Coinbase, public candles ──► the oldest 720: strategy.fit(history)
+ (no key, no account)     ──► LiveBarFeed: the last 360 at once (six hours), then each candle as it closes
+                                    │
+                                    ▼
+                StrategyRunner(SimulatedBroker, Journal, StateStore).run(feed)
+```
+
+- **Source** (`data/market.py`): the public candles endpoint of Coinbase Exchange, read with the standard library. A crypto market never closes, so the session is live at any hour.
+  - A request returns at most 300 candles, so a history is read in windows of 300.
+  - The exchange caches each URL for several minutes. Every request therefore carries its own `start` / `end`, and a retry asks for a slightly different range: a poll never reads a stale copy.
+  - A minute without a trade has no candle.
+- **Feed** (`LiveBarFeed`):
+  - it first yields the candles of the last hours at once, so the session opens with a history and an equity curve. These bars go through the same loop as the live ones;
+  - it then asks for each candle 10 seconds after its minute ended, because the exchange can still answer with an unfinished candle in the first seconds, and asks again every 5 seconds until the candle is there;
+  - a failed request is retried after 5 seconds, then at doubling intervals up to a minute. The session goes on when the data is back, and trades at once the candles it missed (290 at most);
+  - it ends after a set number of live candles.
+- **Decisions and fills**: a strategy decides on the close of a candle about ten seconds after it, and its order fills at the open of the next candle, a minute later, as in a backtest.
+- **Product**: one product per session. Quantities are whole units and prices are rounded to the cent, so the product must be priced accordingly: SOL-USD or LTC-USD suit, BTC-USD does not.
+- **Costs**: the fees and the slippage are the simulated ones, 1 bp each by default. Real crypto trading costs are far higher.
+
+**The shared session of the interface.** When `QUANTLAB_MARKET` is set, the server keeps one session running for every visitor (`SimulatedSessions.keep_running`):
+
+- trend following and mean reversion trade SOL-USD in one account of $100,000, each entry sized at $20,000;
+- the strategies are fitted on 720 candles, the next 360 are traded at once, then 1,440 live candles: after these 24 hours the session ends and a new one starts, with a fresh account;
+- a session that fails (the exchange does not answer when it starts) is replaced by a new attempt a minute later;
+- only the folders of the last two sessions are kept;
+- visitors watch it and can replay it, but cannot stop it.
+
+The server only runs while the application is awake. Streamlit Community Cloud puts an application to sleep after 12 hours without a visit, and wipes its disk: at the next visit a new session starts, and trades the last six hours at once before going live.
+
 ---
 
 ## 11. The web interface
@@ -645,7 +682,16 @@ The page runs the walk-forward optimization of §9.2 on one strategy.
 
 ### 11.4 Live trading
 
-The page runs the simulated sessions of §10.0.
+The page has two tabs.
+
+**Market: paper trading on real data** follows the shared session of §10.5.
+
+- In the online demo, the session runs by itself and visitors only watch it. Locally, the tab has a product field and a Start button, then a Stop button: the exchange is contacted only once the session is started.
+- The panel shows the product, the strategies and the status, a warning while the market data is interrupted, how many candles were traded, then the same content as a simulated session (below), and the replay.
+- It refreshes every 5 seconds. The session's files are read once per change for all the visitors, not once per visitor.
+- The replay runs on the session as it is so far, while it goes on.
+
+**Simulated sessions** runs the sessions of §10.0.
 
 - **Inputs**: one strategy, its symbols among the bundled samples (SPY and QQQ by default for the pair), its parameters, the market (replay or synthetic), the number of bars to stream (50 to 5,000, 390 by default: two sessions), the speed (1, 2, 5, 10 or 20 bars per second), the seed of the synthetic market, and the execution and risk block.
 - **Sessions**: each one runs in the background and has its panel, with its status, its progress and a Stop button. The panel of the most recent session is open, and it refreshes every 2 seconds while a session runs.
@@ -663,7 +709,9 @@ Sessions started locally are saved in `sessions/`, so `quantlab replay --session
 
 ## 12. Known limitations
 
-- Live trading is simulated only: no market-data feed and no broker connector ship with the platform, and no command resumes a session after a crash (§10.3).
+- Execution is simulated only: no broker connector ships with the platform, and no command resumes a session after a crash (§10.3).
+- Real market data is limited to the 1-minute candles of one crypto product per session, in the live session only: it is not a source of the data, backtest and optimization pages. Quantities are whole units and the tick is one cent, which rules out products priced in tens of thousands of dollars or in cents.
+- The calendar is the New York one: the daily returns behind the Sharpe ratio, the 252 days of the annualization and the analysis of the data page assume stock sessions. The trading loop counts in bars and does not depend on it.
 - Model cross-validation (`TimeSeriesSplit`) has no gap between training and validation, so labels at the boundary can overlap slightly. The walk-forward optimizer, with its embargo, does not have this flaw.
 - Only stocks, and MKT, LMT and STP orders. The protective OCA pair is placed after the entry fills, not as a native bracket order.
 - No netting of orders between strategies.

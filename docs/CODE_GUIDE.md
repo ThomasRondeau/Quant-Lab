@@ -46,7 +46,7 @@ The extras of `pyproject.toml`: `.[dev]` installs everything (interface, tests, 
 |---|---|
 | `backtest` | train the strategies on the start of the data and trade them on the end; prints the metrics |
 | `optimize` | walk-forward search of the parameters of one strategy |
-| `live` | simulated live trading of one strategy, saved as a session |
+| `live` | simulated live trading of one strategy, saved as a session: on recorded bars, on a synthetic market, or on the real candles of a crypto product |
 | `replay` | rerun a session in the backtester and compare both |
 | `params` | list every parameter of the given strategies: group, type, default, bounds, help |
 | `plot` | chart one session: candles, volume, VWAP bands, support and resistance lines |
@@ -88,10 +88,12 @@ Options of one command:
 | | `--anchored` | off | growing training block |
 | | `--objective` | `total_return_pct` | metric to maximize |
 | | `--min-trades` | 5 | fewer trades discard a combination |
-| `live` | `--source` | `replay` | `replay` or `synthetic` market |
-| | `--data` | `sample` | where the bars come from: `sample` or `yfinance` |
-| | `--bars` | 975 | bars to stream |
-| | `--speed` | 2 | bars per second; 0 for as fast as possible |
+| `live` | `--source` | `replay` | `replay`, `synthetic`, or `market`: the real 1-minute candles of the crypto product given as `--symbol` (`SOL-USD`), read from Coinbase without key. Needs the network; Ctrl+C stops the session |
+| | `--data` | `sample` | `replay` and `synthetic`: where the bars come from, `sample` or `yfinance` |
+| | `--bars` | 975 | bars to stream; `market`: live candles before the session ends |
+| | `--speed` | 2 | `replay` and `synthetic`: bars per second; 0 for as fast as possible |
+| | `--history` | 720 | `market`: candles the strategy is trained on |
+| | `--backfill` | 360 | `market`: candles of the last hours, traded at once when the session starts |
 | | `--seed` | | seed of the synthetic market |
 | | `--session` | `<strategy>_<symbols>_<time>` | name of the session; it must be new |
 | `replay` | `--session` | required | name of the session |
@@ -126,6 +128,7 @@ quantlab/
 │   ├── pairs.py            combine_symbols (multi-symbol layout)
 │   ├── loading.py          load_bars, split, read_sample (shared by the CLI and the interface)
 │   ├── data_manager.py     DataManager: yfinance
+│   ├── market.py           public 1-minute candles of a crypto exchange (Coinbase): fetch_candles, history
 │   └── samples/            bundled 2-minute bars, one parquet file per symbol (the default source)
 ├── features/
 │   ├── base.py             Feature (abstract), Source, ewm_warmup
@@ -160,8 +163,10 @@ quantlab/
 │   ├── router.py           OrderRouter, Lot, Trade
 │   └── simulated.py        SimulatedBroker
 ├── live/                   simulated live trading
-│   ├── feeds.py            PacedBarFeed (real-time pacing), synthetic_bars, session_times
-│   └── session.py          SimulatedConfig, SimulatedSession, SimulatedSessions (background registry)
+│   ├── feeds.py            PacedBarFeed (real-time pacing), LiveBarFeed (real candles as they close),
+│   │                       synthetic_bars, session_times
+│   └── session.py          SimulatedConfig, SimulatedSession, SimulatedSessions (background registry, and the
+│                           session it keeps running)
 ├── backtest/
 │   ├── run.py              backtest() -> BacktestResult
 │   ├── metrics.py          compute_metrics, daily_returns, max_drawdown
@@ -317,7 +322,9 @@ runner.get_state() / runner.set_state(state)
 - `build_strategy(name, symbols, params=None)` (`strategies/registry.py`): a strategy from its command-line name, with validated parameters.
 - `backtest(strategies, training, data, capital=…, fee_bps=1, slippage_bps=1, risk_limits=None, precompute_features=True) -> BacktestResult` (`metrics`, `equity`, `trades`, `trades_frame()`).
 - `WalkForwardOptimizer(strategy_factory, param_grid, train_size, validation_size, test_size, objective="total_return_pct", step=None, embargo=0, anchored=False, min_trades=1)`. `.run(data)` returns a `WalkForwardResult` (`summary()`, `param_stability()`, `mean_test_score`, `folds`). The factory must return a **new** instance at each call. The command line and the interface pass an embargo of 30 bars and a minimum of 5 trades.
-- `SimulatedSession(folder, SimulatedConfig(strategy, symbols, …))` (`live/session.py`): `prepare()` loads the bars, trains the strategy and writes the snapshot; `run()` streams the bars and blocks; `stop()` can be called from another thread.
+- `SimulatedSession(folder, SimulatedConfig(strategy, symbols, …))` (`live/session.py`): `prepare()` loads the bars, trains the strategy and writes the snapshot; `run()` streams the bars and blocks; `stop()` can be called from another thread. `source="market"` trades real candles, and `extra_strategies` adds strategies to the same account.
+- `SimulatedSessions(root)`: `start(name, config, owner)` runs a session in a background thread, within the limits of the registry; `keep_running(prefix, config, owner)` runs sessions one after the other for as long as the process lives; `stop_kept(owner)` and `stop_all()` end them.
+- `market.fetch_candles(product, start, end)` and `market.history(product, n_bars)` (`data/market.py`): the public 1-minute candles of a crypto product, in the OHLCV contract.
 - `replay_session(folder, fee_bps=None, slippage_bps=None)` returns a `ReplayReport` (`summary`, `signals`, `entry_fills`, `feature_diffs`).
 - `read_journal(path)` (`runtime/journal.py`) returns the bars and the events of a session; `.kind(name)` gives the events of one kind as a table.
 - `analysis/dataset.py`, on the bars of one symbol in New York time (`symbol_bars`): `summary`, `sessions`, `intraday_returns`, `return_stats`, `intraday_profile`, `quality`, and `return_correlation` across symbols.
@@ -453,7 +460,11 @@ Implement the `Broker` protocol (§4.6):
 - provide `get_state` and `set_state` for restarts;
 - keep the orders' ids in a field the broker echoes back, so that working orders can be found again after a restart.
 
-A live feed implements `BarFeed`. It yields completed bars in time order, and `None` as a heartbeat while waiting, so that the runner can process broker events between bars.
+A live feed implements `BarFeed`. It yields completed bars in time order, and `None` as a heartbeat while waiting, so that the runner can process broker events between bars. `LiveBarFeed` (`live/feeds.py`) is the example to follow: it takes the function that reads the candles, so another exchange only needs its own `fetch(product, start, end)` beside the one of `data/market.py`. Three things to check on a new source:
+
+- when a closed candle is final. Coinbase can still serve an unfinished one a few seconds after the close, hence the delay of the feed;
+- whether its responses are cached. Coinbase caches each URL for minutes, hence a distinct range for every request;
+- what it sends for a period without a trade, and how many candles one request returns.
 
 ### 5.6 The web interface
 
@@ -469,6 +480,8 @@ The interface (`quantlab/ui/app.py`) holds no logic of its own: each page calls 
 - **Widget values** are kept in `st.session_state["<page>_<strategy>_<parameter>"]`. Presets write them there, before the widgets are drawn.
 - **Reruns**: Streamlit reruns the script at every interaction. Results to keep go to `st.session_state`, and downloaded data to `st.cache_data`.
 - **Live page**: sessions run in the `SimulatedSessions` registry (`st.cache_resource`), and the monitor is an `st.fragment(run_every=2)` that only runs while a session is alive. It reads the session's files (`read_session`), never the running objects, so the UI thread does not race the trading thread.
+- **Market tab**: the shared session is started by `keep_running`, once per server process (`MARKET_STRATEGIES`, `MARKET_SIZE` and `MARKET_BARS` set what it trades). Its monitor is an `st.fragment(run_every=5)`, and the view is cached for all visitors by the modification time of the session's files (`shared_session_view`).
+- **Code updates**: a deployment replaces the files under the running server, which reruns `app.py` but keeps the modules it imported. `refresh_code()`, at the top of `app.py`, detects a changed file of the package, stops the background sessions, forgets the modules and empties the caches. It needs one run to know the files, so it protects from the second deployment on; it also picks up local edits without a restart.
 - **Hosted mode**: anything that reads a path, writes a file or can run for long must respect `hosted()` (`ui/hosting.py`): no server path, presets in the session, `Limits` checks before computing, `compute_slots()` around heavy work.
 - **Data page**: it loads the bars without a button (the bundled sample by default) and recomputes everything from the period of its slider. The figures come from `analysis/dataset.py`, which has no Streamlit code.
 - **Charts**: colors by role (a fixed categorical order, blue for a single series, blue / red for gains / losses), hover tooltips, New York time. The price and volume charts use the position of the bar as x scale, labeled with its time, so nights and weekends take no room. Bars drawn on an x range (`x` and `x2`) need `stack=None`, or Vega-Lite drops their width.
@@ -479,7 +492,9 @@ The interface (`quantlab/ui/app.py`) holds no logic of its own: each page calls 
 
 - **Batch / live parity**: if a strategy behaves differently with `--bar-by-bar`, a feature is not causal or its warmup is too short. The tests of `test_features.py` pinpoint it.
 - **Fixtures without a time zone**: `aapl_1m.parquet` has a naive index. The runner accepts it, but `validate_ohlcv` would convert it to UTC. Its 5,000 one-minute bars include the extended hours, about 700 bars per day, so 1,000 bars cover about a day and a half.
-- **Streamlit keeps imported modules**: after editing a module other than `ui/app.py`, restart the interface to see the change.
+- **Streamlit keeps imported modules**: `refresh_code()` reloads the package when one of its files changes (§5.6). Running sessions are stopped by that reload.
+- **Windows and the session state**: Windows refuses to replace `state.json` while a reader has it open. `StateStore.save` retries the rename for half a second.
+- **No network in the tests**: `data/market.py` is the only module that contacts the exchange. The tests replace its `fetch_candles`, or pass their own `fetch` and clock to the feed.
 - **Unique `strategy_id`** within a runner: otherwise `StrategyRunner` raises an error.
 - **Pickle**: a strategy must be picklable for sessions, so no lambda and no connection in its attributes. `test_every_strategy_survives_the_session_snapshot` checks it.
 
@@ -499,7 +514,8 @@ The interface (`quantlab/ui/app.py`) holds no logic of its own: each page calls 
 | `test_cli.py` | argument parsing (`--param`, `--params-file`, `--range`), registry, `backtest` and `optimize` commands on the fixtures |
 | `test_ui.py` | Streamlit interface without a browser (`AppTest`): every page renders, generated forms, presets, optimization ranges, backtest and data page end to end, the dataset analysis |
 | `test_bugfixes.py` | regressions of the bugs fixed during the refactoring of the original prototype |
-| `test_live.py` | paced feeds, synthetic market, simulated sessions (replayed with 100 % agreement), stop, background registry and its limits, live view, the live page end to end |
+| `test_live.py` | paced feeds, synthetic market, simulated sessions (replayed with 100 % agreement), stop, background registry and its limits, live view, the live page end to end; on a fake exchange with its own clock: the real-market feed (catch-up, closed candles only, quiet minutes, outage), the market session, the session kept running, the Market tab |
+| `test_market.py` | the public candles client: parsing, request ranges, errors, windows of 300 candles |
 | `test_hosting.py` | hosted mode: bundled samples, limits, safe preset names, compute slots, the hosted backtest, live and data pages; `requirements.txt` pins every declared dependency |
 | `test_walk_forward.py` | fold layout, embargo, parameter selection, fresh instances |
 | `test_latency.py` (slow) | median `on_bar` latency of Cascade < 100 ms |
@@ -523,4 +539,6 @@ A pure refactoring must **never** modify this file.
 - **`requirements.txt`** is the environment of the online demo: Streamlit Community Cloud installs this file, not `pyproject.toml`. It pins every dependency to the version the tests run on. `test_requirements_pin_the_declared_dependencies` fails when a dependency of `pyproject.toml` is missing from it, or pinned outside its allowed range. When a dependency changes, update both files.
 - **Python**: 3.10 or later. The online demo runs on Python 3.12, chosen in the settings of the app, because the pinned versions have no prebuilt package for newer versions.
 - **Online demo**: the app runs `quantlab/ui/app.py` from the `main` branch, and every push to `main` redeploys it. The secret `QUANTLAB_HOSTED = "1"`, set in the settings of the app, reaches the code as an environment variable and turns the hosted mode on ([ARCHITECTURE.md §1.1](ARCHITECTURE.md)). Without it, the public app runs unrestricted.
+- **Market session**: the optional secret `QUANTLAB_MARKET = "1"` starts the shared paper-trading session on real market data ([ARCHITECTURE.md §10.5](ARCHITECTURE.md)); another value names the product. Removing the secret is the switch that stops the app from contacting the exchange.
+- **After a push**: the cloud updates the files without restarting the server, and `refresh_code()` reloads the package (§5.6). If a page still shows an import error after a deployment, reboot the app from its menu on share.streamlit.io.
 - **`.streamlit/config.toml`** applies to local and hosted runs: uploads capped at 10 MB, usage statistics off.

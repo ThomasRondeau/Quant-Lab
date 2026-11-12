@@ -117,6 +117,29 @@ def test_restart_from_saved_state_reproduces_the_uninterrupted_run(tmp_path: Pat
     assert second.portfolio.equity == pytest.approx(reference.portfolio.equity, abs=1e-6)
 
 
+def test_state_is_saved_even_when_a_reader_holds_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import quantlab.runtime.state as state_module
+
+    store = StateStore(tmp_path / "state.json")
+    store.save({"bar": 1})
+    replace, refused = state_module.os.replace, []
+
+    def busy(source: Path, target: Path) -> None:  # Windows: the interface is reading the file at that instant
+        if len(refused) < 3:
+            refused.append(target)
+            raise PermissionError(5, "Access is denied")
+        replace(source, target)
+
+    monkeypatch.setattr(state_module.os, "replace", busy)
+    store.save({"bar": 2})
+    assert len(refused) == 3 and store.load() == {"bar": 2}
+    monkeypatch.setattr(state_module, "REPLACE_ATTEMPTS", 2)
+    refused.clear()
+    with pytest.raises(PermissionError):
+        store.save({"bar": 3})
+    assert store.load() == {"bar": 2}  # the previous state is intact
+
+
 def test_catch_up_advances_open_lots_without_deciding(aapl: pd.DataFrame) -> None:
     strategy = fitted(MeanReversionStrategy(**EXITS), aapl.iloc[:1000])
     runner = run([strategy], aapl.iloc[1000:1100])

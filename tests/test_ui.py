@@ -219,3 +219,43 @@ def test_charts_build_valid_specs() -> None:
                              for m in (0, 30, 60)])  # fmt: skip
     assert charts._bar_ticks(days) == {0: "Jan 05", 3: "Jan 06", 6: "Jan 07"}
     assert charts._bar_ticks(days[:3]) == {0: "Jan 05 09:30", 1: "10:00"}
+
+
+def test_changed_code_is_reloaded_and_the_background_sessions_stopped(tmp_path: Path) -> None:
+    """A deployment replaces the files under the running server: the next run must not mix old and new modules."""
+    import os
+    import sys
+    import types
+
+    import quantlab.ui.app as app
+
+    class Registry:
+        stopped = 0
+
+        def stop_all(self) -> None:
+            self.stopped += 1
+
+    source = tmp_path / "fakepkg" / "sub" / "module.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    names = ("fakepkg", "fakepkg.sub", "fakepkg.sub.module", "fakepkgother")
+    registries = vars(sys)["_quantlab_code"]["registries"]
+    saved, registry = list(registries), Registry()
+    registries[:] = [registry]
+    try:
+        for name in names:
+            sys.modules[name] = types.ModuleType(name)
+        assert not app.refresh_code(tmp_path, "fakepkg")  # the first run has nothing to compare with
+        assert not app.refresh_code(tmp_path, "fakepkg") and registry.stopped == 0
+        assert all(name in sys.modules for name in names)
+
+        stamp = source.stat().st_mtime_ns + 10**9
+        os.utime(source, ns=(stamp, stamp))
+        assert app.refresh_code(tmp_path, "fakepkg")
+        assert registry.stopped == 1 and not registries
+        assert [name for name in names if name in sys.modules] == ["fakepkgother"]
+        assert not app.refresh_code(tmp_path, "fakepkg")
+    finally:
+        registries[:] = saved
+        for name in names:
+            sys.modules.pop(name, None)
