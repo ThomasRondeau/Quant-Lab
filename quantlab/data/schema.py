@@ -1,4 +1,4 @@
-"""Single OHLCV contract shared by every data source (yfinance, parquet / csv files)."""
+"""Single OHLCV contract shared by every data source (bundled samples, yfinance, parquet / csv files)."""
 
 from __future__ import annotations
 

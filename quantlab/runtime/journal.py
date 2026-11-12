@@ -7,8 +7,8 @@ Tables:
 - ``events``: one row per event, with the bar it happened on, the wall-clock time and a JSON payload.
   Kinds: ``features`` (feature row of a strategy), ``decision`` (its diagnostics, e.g. predictions),
   ``signal`` (an entry order emitted by a strategy, and what the risk check let through), ``order``,
-  ``cancel``, ``fill``, ``status``, ``trade`` (closed round trip), ``equity`` (per bar: equity, cash,
-  positions, halted, latency), ``session`` (start / resume / stop).
+  ``cancel``, ``fill``, ``status``, ``trade`` (closed round trip), ``exit`` (a close requested by a strategy),
+  ``equity`` (per bar: equity, cash, positions, halted, latency), ``session`` (start / stop).
 
 `JournalingBroker` wraps the real broker so every order sent and every fill / status received is
 recorded at the boundary, whichever component caused it.

@@ -5,9 +5,10 @@ This document explains **how the system works**:
 - how features stay causal;
 - how models are trained without look-ahead;
 - how orders are sized, simulated and protected;
-- risk controls, metrics, and the session journal, restart and replay.
+- risk controls, metrics, and the session journal, restart and replay;
+- what each page of the web interface shows.
 
-For the code layout and how to extend it, see [CODE_GUIDE.md](CODE_GUIDE.md).
+For the code layout, the command-line reference and how to extend the platform, see [CODE_GUIDE.md](CODE_GUIDE.md).
 
 ---
 
@@ -17,25 +18,42 @@ Quant Lab is a research platform for intraday strategies built on technical indi
 
 The guiding principle: **one code path for backtest and live**. Features, models, strategies, sizing, exits, risk and order routing are identical in every mode. Only two components change:
 
-| Component | Backtest | Live |
-|---|---|---|
-| Bar source (`BarFeed`) | `HistoricalBarFeed`, a replay of a DataFrame | a real-time feed (same protocol) |
-| Execution (`Broker`) | `SimulatedBroker` | a broker connector (same protocol) |
+| Component | Backtest | Simulated live trading | Real live trading |
+|---|---|---|---|
+| Bar source (`BarFeed`) | `HistoricalBarFeed`, a replay of a DataFrame | `PacedBarFeed`, bars delivered in real time | a market-data feed (same protocol) |
+| Execution (`Broker`) | `SimulatedBroker` | `SimulatedBroker` | a broker connector (same protocol) |
+
+The first two modes ship with the platform. No market-data feed or broker connector is included yet: both are written against these two protocols ([CODE_GUIDE.md §5.5](CODE_GUIDE.md)).
 
 Any backtest-only optimization, such as precomputing the features, must be **proven identical** to the live path by a parity test.
 
-The system is driven from the command line (`python -m quantlab …`) or from the **web interface** (`python -m quantlab ui`). Both call the same library functions. The interface opens on a data page, which analyzes a set of bars over a chosen period (price, returns, intraday profile, sessions, quality), and adds charts: equity curve, drawdown, per-trade P&L, scores per fold.
+The system is driven from the command line (`python -m quantlab …`) or from the **web interface** (`python -m quantlab ui`, §11). Both call the same library functions. The interface opens on a data page, which analyzes a set of bars over a chosen period (price, returns, intraday profile, sessions, quality), and adds charts: equity curve, drawdown, per-trade P&L, scores per fold.
 
 ### 1.1 Hosted mode
 
-The interface also runs as a public online demo. With `QUANTLAB_HOSTED=1` (`ui/hosting.py`), the interface:
+The interface also runs as a public online demo. The environment variable `QUANTLAB_HOSTED` (`1`, `true`, `yes` or `on`; `ui/hosting.py`) turns the hosted mode on. The interface then:
 
 - reads data from the bundled samples, from uploads (10 MB at most, `.streamlit/config.toml`) or from yfinance, and never from a path typed on the server;
-- keeps the presets a visitor saves in that visitor's session; nothing is written on the server;
-- caps one request: 12,000 bars, 3 strategies at once, 200 test bars for ARIMA, and a number of walk-forward runs (combinations × folds) per strategy. ARIMA cannot be optimized online. A request over a limit gets a message instead of running;
-- runs at most 2 heavy computations at once across all visitors, and the others wait;
-- caches every backtest by its full specification for all visitors, so the default runs are instant after the first one;
-- runs simulated live sessions in a temporary folder: 3 at once across all visitors, 1 per visitor, 975 bars and 15 minutes at most, deleted after an hour. A visitor is identified by a random id kept in the page URL, so a reload finds its sessions again.
+- keeps the presets a visitor saves in that visitor's session, and writes nothing in the project folder. Uploaded files and live sessions go to the temporary folder of the server;
+- caps one request (`Limits`). A request over a limit gets a message instead of running:
+
+  | Limit | Value |
+  |---|---|
+  | Bars loaded | 12,000 |
+  | Strategies in one backtest | 3 |
+  | Test bars when ARIMA is selected | 200 |
+  | Walk-forward runs (combinations × folds): `trend`, `mean_reversion`, `pair` | 60 |
+  | Walk-forward runs: `ml_hybrid` | 24 |
+  | Walk-forward runs: `cascade` | 4 |
+  | Walk-forward runs: `arima` | none: it cannot be optimized online |
+
+- runs simulated live sessions in a temporary folder: 3 at once across all visitors, 1 per visitor, 975 bars and 15 minutes at most. Ended sessions are deleted once they are an hour old, when a visitor starts a new one. A visitor is identified by a random id kept in the page URL, so a reload finds its sessions again;
+- shows a note in the sidebar, with a link to the source code.
+
+Two protections apply in every mode, hosted or local:
+
+- at most 2 heavy computations (backtests, optimizations, session replays, and in hosted mode the training of a live session) run at once in the server process. The others wait up to 90 seconds, then get a "server busy" message;
+- every backtest is cached by its full specification (64 entries), for all visitors, so the default runs are instant after the first one.
 
 ---
 
@@ -43,7 +61,7 @@ The interface also runs as a public online demo. With `QUANTLAB_HOSTED=1` (`ui/h
 
 ```
                  ┌───────────────────────────────────────────┐
-  Historical     │ yfinance · parquet / csv files            │
+  Historical     │ bundled samples · yfinance · parquet / csv│
   bars           └───────────────┬───────────────────────────┘
                                  │ validate_ohlcv (UTC, float, sorted, unique)
                                  ▼
@@ -64,6 +82,8 @@ The interface also runs as a public online demo. With `QUANTLAB_HOSTED=1` (`ui/h
  └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+Between steps 5 and 6, the runner passes to the router the close requests the strategy made while deciding (`close_positions()`, §6.2).
+
 A **backtest** is this runner fed by a `HistoricalBarFeed` and wired to a `SimulatedBroker`. There is no separate backtesting engine.
 
 ---
@@ -74,19 +94,25 @@ A **backtest** is this runner fed by a `HistoricalBarFeed` and wired to a `Simul
 
 | Source | Resolution | Depth | Requirement |
 |---|---|---|---|
-| `sample` (default) | 2 min | about six weeks: AAPL, MSFT, NVDA, SPY, QQQ | none: bundled in `quantlab/data/samples/`, offline |
+| `sample` (default) | 2 min | 30 sessions (5,800 bars, about six weeks) for each of AAPL, MSFT, NVDA, SPY, QQQ | none: bundled in `quantlab/data/samples/`, offline |
 | `yfinance` | 2 min | ~60 days | network (free, no API key) |
 | `file` | any | any | parquet or csv |
 
-The window follows one convention, `(symbol, days_back, until)`: from `days_back` days ago to `until` days ago. For the samples, the days count back from the end of the sample.
+The history window is a number of calendar days (`--days`, "Days of history"):
+
+- **`yfinance`**: from that many days ago to today (`DataManager` follows the convention `(symbol, days_back, until)`: from `days_back` days ago to `until` days ago). Prices are not adjusted for splits or dividends.
+- **`sample`**: the days count back from the end of the sample, so the default of 55 days returns it whole.
+- **`file`**: the whole file is used, and the window is ignored. A file that already has the multi-symbol layout (§3.3) is read as is.
 
 ### 3.2 One format (`validate_ohlcv`)
 
 Every source returns a normalized DataFrame:
 
 - a **UTC** `DatetimeIndex` named `Datetime`, sorted and unique. A timestamp without a time zone is taken as UTC;
-- lowercase `float` columns `open, high, low, close, volume`;
+- lowercase `float` columns `open, high, low, close, volume` (any other column is kept);
 - no row without a close.
+
+When the timestamps are not the index, they are read from a `datetime`, `date` or `timestamp` column. A file without one of the five columns is refused.
 
 Everything is UTC internally. Only the split into sessions, used by the VWAP and the daily returns, uses New York time.
 
@@ -209,16 +235,31 @@ The sheet is the single reference:
 
 For an optional number, 0 (or `none`) means "none".
 
-**Consistency rules** link several parameters (`Strategy.check`). A violation is an error. Examples:
-- MACD fast < MACD slow;
-- `training_margin` ≥ `horizon`;
-- `exit_zscore` < `zscore_threshold`;
-- no ATR level for a pair;
-- both a combined stop and a leg stop for a pair.
+**Consistency rules** link several parameters (`Strategy.check`). A violation is an error:
 
-A **warning** flags a combination that is allowed but questionable. For example, a `holding_bars` different from the horizon of the ML models means positions are not held for the period the models predict.
+| Strategy | Rule |
+|---|---|
+| all | a `size_mode` other than `fixed` needs a `size_value` |
+| `trend` | `sma_fast` < `sma_slow` |
+| `ml_hybrid`, `cascade` | `macd_fast` < `macd_slow`; `training_margin` ≥ `horizon`; distinct `momentum_windows` |
+| `ml_hybrid` | `rsi_buy` < `rsi_sell` |
+| `cascade` | `volume_fast_window` < `volume_slow_window` |
+| `pair` | `exit_zscore` < `zscore_threshold`; no ATR level; both a combined stop (`stop_loss_pct`) and a leg stop (`leg_stop_pct`) |
 
-**Presets** are versioned JSON files in `presets/`, named `<strategy>-<name>.json`: `{"strategy": "trend", "params": {...}}`.
+A **warning** flags a combination that is allowed but questionable. There are two:
+- for `ml_hybrid` and `cascade`, a `holding_bars` different from the `horizon` of the models: positions are not held for the period the models predict;
+- for `pair`, a leg stop no wider than the combined stop (§7.3).
+
+**Presets** are versioned JSON files in `presets/`, named `<strategy>-<name>.json`: `{"strategy": "trend", "params": {...}}`. A preset only lists the values that differ from the defaults. One ships for each strategy:
+
+| Preset | Changes |
+|---|---|
+| `trend-atr-exits` | stop at 1.5 ATR, target at 3 ATR, 20 bars of holding |
+| `mean_reversion-middle-band` | target at the Bollinger middle band, RSI threshold 25, volume threshold 1.5 |
+| `arima-slow` | order (1, 1, 1), window of 100 closes, minimum edge of 4 bp |
+| `ml_hybrid-shallow` | 200 trees of depth 3, learning rate 0.03 |
+| `cascade-horizon-10` | horizon and holding of 10 bars, training margin 40, minimum amplitude 0.1 % |
+| `pair-wide` | entry at a z-score of 2.5, exit at 0.25, 30 bars of holding |
 
 Tests check that each sheet matches its constructor (names and defaults), and that changing each declared parameter really changes the strategy.
 
@@ -250,7 +291,7 @@ For a pair, the stop and the target apply to the combined P&L, and the ATR param
 A strategy can also:
 - adjust the plan of one signal: `mean_reversion` with `target_middle_band=true` targets the Bollinger middle band of the moment;
 - ask to close its own positions (`close_positions()`): `pair` does so when the z-score comes back within `exit_zscore`;
-- fill `diagnostics` (for example its predictions), which is journaled at every bar.
+- fill `diagnostics` (for example its predictions). It is reset at every bar and journaled whenever the strategy filled it.
 
 ---
 
@@ -308,6 +349,20 @@ Every entry order carries an **exit plan** (`ExitPlan`, `execution/exits.py`): s
 - **Several strategies on one symbol**: each can hold lots there. The broker position is their net sum, and closing a lot changes it by exactly that lot's quantity. Orders are not netted between strategies: each lot's exit stays exact, at the cost of a few extra fees.
 - **Live race condition**: if the stop fills while a time exit is in flight, the lot is "over-closed". The excess becomes a correction lot, closed immediately.
 
+Every closed trade records why its lot was closed (the `reason` column of the trades table and of the CSV export):
+
+| `reason` | The lot was closed by |
+|---|---|
+| `stop_loss`, `take_profit` | its protective stop or target; for a pair, the combined stop or target of the group |
+| `time` | the end of its holding period |
+| `stop_gap`, `target_gap` | a fill already beyond an absolute level |
+| `signal` (default), or the name the strategy gives, such as `zscore` | a request of its strategy (`close_positions`) |
+| `leg_stop` | a pair: the protective stop of a leg; the other legs carry the same reason |
+| `leg_missing` | a pair: the entry of another leg was not filled |
+| `kill switch` | the daily-loss limit (§8) |
+| `correction` | the immediate close of an over-fill |
+| `open` | nothing: the position was still open at the end of the backtest, and is marked at the last close |
+
 ### 7.3 Groups of lots (pairs)
 
 Entries that share a `group_id` form a **group**: the two legs of a pair (`Strategy.group()`).
@@ -330,7 +385,7 @@ The `SimulatedBroker` follows realistic, conservative rules:
 
 - an order decided on the close of bar `t` is **never** filled at that close. A market order fills at the **open of `t+1`**, plus slippage against the order (1 bp by default);
 - a **stop** triggers when the bar's high / low crosses it. It fills at the stop price, or at the open if the bar gapped through it, plus slippage;
-- a **limit** fills at its price, or at a better open;
+- a **limit** fills at its price, or at a better open, without slippage;
 - protective orders placed at the open's fill are tested on the rest of that same bar;
 - when a bar touches **both** the stop and the target, the **stop is taken** (the conservative choice);
 - **fees** are 1 bp of the notional per side.
@@ -350,7 +405,11 @@ The `RiskManager` checks **every entry order** before it is sent. Exits are neve
 | `require_stop` | an entry whose exit plan has no stop is refused (on by default) |
 | `max_order_quantity` | the order's quantity is **reduced** to this cap |
 | `max_position_quantity` | net position per symbol, pending entries included: the order is reduced, or refused when there is no room left |
-| `max_daily_loss_pct` | **kill switch**: when the equity falls this percentage below its start-of-day value, trading stops, pending entries are cancelled and, by default (`flatten_on_halt`), every position is closed |
+| `max_daily_loss_pct` | **kill switch**: when the equity falls this fraction (0.01 = 1 %) below its start-of-day value, trading stops, pending entries are cancelled and, by default (`flatten_on_halt`), every position is closed |
+
+Only `require_stop` is on by default. The three other limits are unset unless they are given: `--max-order`, `--max-position` and `--max-daily-loss` on the command line, or the "Execution and risk" panel of the interface. Both take the daily loss as a percentage.
+
+The kill switch is checked at each bar close. Its day is the UTC date of the bar, which is the New York date during regular trading hours. Once triggered, it stays on for the rest of the run, the following days included: only `RiskManager.resume()` turns trading back on.
 
 ---
 
@@ -364,6 +423,13 @@ They are computed on the **equity curve**, not on a sum of per-trade percentages
 - `sharpe_ratio`, `sortino_ratio`: on daily returns (New York sessions), annualized by √252;
 - `max_drawdown_pct`: the largest peak-to-trough fall of the equity;
 - per-trade statistics: `total_trades`, `win_rate`, `profit_factor`, `avg_trade_return_pct`, `total_pnl_net`, `total_fees`.
+
+Details:
+- a trade is one closed lot, so a pair counts two trades per round trip, one per leg;
+- a trade's return is its net P&L over its entry notional, and a trade wins when its net P&L is positive;
+- the profit factor is the sum of the gains over the sum of the losses, infinite when no trade loses;
+- with fewer than two sessions in the test block, there is a single daily return: the Sharpe and Sortino ratios are then 0;
+- the Sortino ratio divides by the downside deviation, computed over all the days. It is 0 when no day loses.
 
 Positions still open at the end of a backtest are marked at the last close and counted as trades flagged `open`.
 
@@ -381,6 +447,22 @@ Each fold of the `WalkForwardOptimizer` follows this split:
 
 The embargo drops bars between the blocks, so that targets built on future prices cannot leak from one block into the next. The result gives the out-of-sample score per fold and the **stability of the chosen parameters**: a choice that changes at every fold reveals noise.
 
+Settings:
+
+| Setting | Default | Role |
+|---|---|---|
+| train, validation and test sizes | none: required | block sizes, in bars |
+| `embargo` | 30 bars (command line and interface) | bars dropped between two blocks |
+| `step` | the test size | shift between two folds; the default gives contiguous test blocks |
+| `anchored` | off | the training block always starts at the first bar and grows, instead of sliding with a constant size |
+| `objective` | `total_return_pct` | the metric of §9.1 to maximize |
+| `min_trades` | 5 (command line and interface) | a combination with fewer trades on the scored block is discarded |
+
+- A combination whose backtest fails is discarded too, and the error is logged. If every combination of a fold is discarded, a warning is logged and the first combination of the grid is used for that fold.
+- The minimum number of trades also applies to the test block: a fold that trades less there has no test score, and is left out of the mean.
+- The folds are cut as long as a whole fold fits in the data: train + validation + test + 2 × embargo bars for the first, one step more for each following one. The bundled sample of one symbol (5,800 bars) gives a single fold with blocks of 3,000 / 1,000 / 1,000 bars.
+- Each backtest of the search uses the default capital and costs: $100,000, fees of 1 bp and slippage of 1 bp.
+
 ---
 
 ## 10. Live sessions: simulated trading, journal, restart, replay
@@ -389,7 +471,7 @@ A live session is the same runner on a real-time `BarFeed`, with a `Journal` and
 
 ### 10.0 Simulated live trading (`live/`)
 
-`quantlab live` and the "Live trading" page run a strategy on a real-time stream without any market connection:
+`quantlab live` and the "Live trading" page (§11.4) run one strategy on a real-time stream without any market connection:
 
 ```
  bars (bundled sample, or any source) ──► split: history │ live bars
@@ -404,6 +486,13 @@ A live session is the same runner on a real-time `BarFeed`, with a `Journal` and
                        StrategyRunner(SimulatedBroker, Journal, StateStore).run(feed)
 ```
 
+- **Two markets**:
+  - `replay` streams the last N bars of the data, and the strategy is trained on the bars before them;
+  - `synthetic` trains the strategy on all the data, then streams N generated bars that continue it.
+
+  N is 975 by default on the command line (five sessions of 2-minute bars) and 390 in the interface.
+- **Pace** (`PacedBarFeed`): a number of bars per second, 2 by default. On the command line, 0 means as fast as possible. Between two bars, the feed sends a heartbeat at least every 0.25 second, so that a stop request is seen at once.
+- **Data**: the bundled samples by default. The command line also takes yfinance (`--data yfinance`); the interface only uses the samples.
 - **Synthetic market** (`synthetic_bars`):
   - log-normal returns with each symbol's realized volatility, correlated across symbols (0.8 by default, for pairs);
   - higher volatility near the open and the close;
@@ -423,11 +512,11 @@ A live session is the same runner on a real-time `BarFeed`, with a `Journal` and
 
 ### 10.1 Session files
 
-Each session has its own folder `sessions/<name>/`:
+Each session has its own folder `sessions/<name>/` (`--sessions-dir` to change the parent folder; `sessions/` is ignored by git). The name is `<strategy>_<symbols>_<date>_<time>` unless `--session` gives one. A name can be used once: starting a session in an existing folder is refused.
 
 | File | Content |
 |---|---|
-| `session.json` | mode, symbols, capital, risk limits, simulator costs, full parameter values of each strategy |
+| `session.json` | mode, market (replay or synthetic), symbols, pace, number of live bars, capital, risk limits, simulator costs, full parameter values of each strategy |
 | `strategies.pkl` | the strategies **right after training**: models and buffers |
 | `warmup.parquet` | the training history |
 | `journal.sqlite` | everything that happened (see below) |
@@ -446,7 +535,9 @@ The journal is a SQLite database in WAL mode. Rows are only appended, it survive
   - `trade`: closed trades;
   - `exit`: exits requested by a strategy;
   - `equity`: equity, cash, positions, kill-switch state, latency;
-  - `session`: start, resume, stop.
+  - `session`: start and stop.
+
+`read_journal(path)` returns both tables as DataFrames, and `.kind("fill")` expands the payloads of one kind into columns.
 
 ### 10.3 Persisted state and restart
 
@@ -469,6 +560,8 @@ A restart then works like this:
 
 A test checks that **cutting a run in the middle of a trade and resuming it gives exactly the same trades and the same equity** as an uninterrupted run.
 
+The restart is a library procedure, and no command runs it yet: `SessionFiles.load_strategies()`, `Strategy.warm(history)`, `StrategyRunner.set_state(StateStore.load())`, then `catch_up(bars)` and `run(feed)`. A simulated session that is stopped stays stopped; it can still be replayed.
+
 ### 10.4 Replay: live against backtest
 
 `quantlab replay --session <name>` reloads the strategies as they were before the first live bar, runs them on the journaled bars with the simulated broker, and compares both journals:
@@ -482,8 +575,95 @@ A test checks that **cutting a run in the middle of a trade and resuming it give
 
 ---
 
-## 11. Known limitations
+## 11. The web interface
 
+`python -m quantlab ui` opens the interface in the browser, on port 8501 (`--port` to change it). It has four pages. Each one calls the library functions that the command line calls, and shows times in New York time.
+
+Three blocks are shared by several pages:
+
+- **Data**: the symbols (comma-separated), the source (§3.1) and the days of history. The file source takes an upload, or a typed path when the interface runs locally.
+- **Parameters**: the form of a strategy, generated from its parameter sheet (§6.1), with one tab per group. Above it, a preset can be loaded and the defaults restored. Under it, the values changed from the defaults, the errors and the warnings are listed, and the current values can be saved as a preset: a file in `presets/` locally, the visitor's session in hosted mode.
+- **Execution and risk**: capital, fees, simulated slippage, and the three account limits of §8, unset by default.
+
+### 11.1 Data (landing page)
+
+The page analyzes a set of bars before it is traded. It loads the bars as soon as it opens, without a button: the bundled AAPL sample by default.
+
+- **Symbols**: one to eight.
+- **Period slider**: both ends move, by steps of one bar. The chart and every figure below follow the period.
+- **Price chart**: the close, as a line. Nights and weekends take no room on the time axis.
+  - With one symbol, the average volume per bar is drawn under the price.
+  - With several, the closes are rebased to 100 at the start of the period, and a selector chooses the symbol analyzed below.
+- **Tiles**: bars, sessions, bar interval, missing bars, return over the period, low and high, annualized volatility, average volume per session.
+- **Tabs**:
+
+  | Tab | Content |
+  |---|---|
+  | Returns | histogram of the bar returns, without the 0.5 % most extreme on each side; mean, standard deviation, worst, best, skewness, excess kurtosis, share of bars up; with several symbols, the correlation of their returns |
+  | Intraday profile | average volume per bar and average absolute bar return, by time of day |
+  | Sessions | one row per session (open, high, low, close, return, range, volume, bars), a chart of the session returns, a CSV download |
+  | Quality | missing bars, incomplete sessions, largest gap inside a session, bars without volume, inconsistent bars, bars with a missing value |
+  | Bars | the bars of the period, with a CSV download |
+
+The figures come from `analysis/dataset.py`, with these definitions:
+
+- a **session** is a New York date;
+- the **bar interval** is the most frequent spacing between two bars;
+- a **bar return** is close to close inside a session, so the overnight gap is left out;
+- a **session return** is measured on the previous close, and on its own open for the first session; the **range** is the high over the low;
+- the **volatility** is the standard deviation of the bar returns, annualized on the median number of bars per session and 252 sessions;
+- a **missing bar** is a hole inside a session, between its first and its last bar, on the grid of the bar interval;
+- an **incomplete session** holds fewer bars than the median session: a half day, or a session cut by the period;
+- an **inconsistent bar** has a high under its open or its close, a low above them, or a low at or under zero.
+
+### 11.2 Backtest
+
+- **Inputs**:
+  - one or several strategies; several form one portfolio on a single account;
+  - the data block;
+  - the test block: the last N calendar days (5 by default) or the last fraction of the bars. The bars before it train the strategies;
+  - "Also each strategy alone", to compare the portfolio with its parts;
+  - "Bar-by-bar live path", to compute the features as live does (§4.3);
+  - the parameters of each strategy, and the execution and risk block.
+- **Results**:
+  - the training and test periods;
+  - tiles: return, net P&L, trades, win rate, profit factor, Sharpe ratio, maximum drawdown;
+  - the equity curve of each run, and the drawdown of the portfolio;
+  - with several runs, a table of all the metrics of §9.1;
+  - the P&L of each trade, the trades table with their exit reason (§7.2), and two CSV downloads: trades and equity curve.
+
+### 11.3 Optimization
+
+The page runs the walk-forward optimization of §9.2 on one strategy.
+
+- **Inputs**:
+  - the data block, and the parameters that stay fixed;
+  - the grid: a minimum / maximum / step range for a number, a list of values for a boolean or a choice. Tuple parameters, such as the ARIMA order, cannot be put in the grid;
+  - the sizes of the training, validation and test blocks (3,000 / 1,000 / 1,000 bars by default), the embargo, the step between folds, the objective, the minimum number of trades, and the anchored option.
+- **Objectives**: `total_return_pct`, `sharpe_ratio`, `sortino_ratio`, `profit_factor`, `total_pnl_net`, `win_rate`.
+- **Results**: the mean out-of-sample score, the test score of each fold, how many folds chose each combination, and the table of the folds with their chosen parameters and test metrics.
+
+### 11.4 Live trading
+
+The page runs the simulated sessions of §10.0.
+
+- **Inputs**: one strategy, its symbols among the bundled samples (SPY and QQQ by default for the pair), its parameters, the market (replay or synthetic), the number of bars to stream (50 to 5,000, 390 by default: two sessions), the speed (1, 2, 5, 10 or 20 bars per second), the seed of the synthetic market, and the execution and risk block.
+- **Sessions**: each one runs in the background and has its panel, with its status, its progress and a Stop button. The panel of the most recent session is open, and it refreshes every 2 seconds while a session runs.
+- **An open panel shows**:
+  - tiles: equity, realized and unrealized P&L, trades and winners, positions, last bar, median latency, kill switch;
+  - the equity curve;
+  - the open positions, with entry, last price, unrealized P&L, stop, target and bars held;
+  - the last 40 events, newest first: signals, orders, fills, trades, exit requests, cancellations, statuses;
+  - the P&L of each closed trade.
+- **Replay**: once the session has ended, "Replay in the backtester" runs §10.4 and shows the signal agreement, the number of signals on each side, the entry slippage and the net P&L on each side.
+
+Sessions started locally are saved in `sessions/`, so `quantlab replay --session <name>` reads them too. The list on the page lasts as long as the server process.
+
+---
+
+## 12. Known limitations
+
+- Live trading is simulated only: no market-data feed and no broker connector ship with the platform, and no command resumes a session after a crash (§10.3).
 - Model cross-validation (`TimeSeriesSplit`) has no gap between training and validation, so labels at the boundary can overlap slightly. The walk-forward optimizer, with its embargo, does not have this flaw.
 - Only stocks, and MKT, LMT and STP orders. The protective OCA pair is placed after the entry fills, not as a native bracket order.
 - No netting of orders between strategies.

@@ -78,11 +78,21 @@ There is no ML model or target here: the rule is purely statistical. An ML versi
 | `holding_bars` | 5 | `--param holding_bars=30` |
 | `quantity`, `size_mode`, `size_value` | 10, fixed, none | `--param size_mode=notional --param size_value=20000` (gross notional of the pair) |
 
+The strategy has 12 parameters: `quantlab params --strategy pair` lists them, and the interface shows them as a form. It has no ATR exits. The preset `presets/pair-wide.json` enters at a z-score of 2.5, exits at 0.25 and holds 30 bars.
+
+Rules checked before a run:
+- `exit_zscore` < `zscore_threshold`, or the pair would exit at once;
+- both `stop_loss_pct` and `leg_stop_pct` are set;
+- a `leg_stop_pct` no wider than `stop_loss_pct` raises a warning.
+
 ```bash
 python -m quantlab backtest --strategy pair --symbol AAPL --symbol MSFT --days 55
 python -m quantlab backtest --strategy pair --symbol AAPL --symbol MSFT --source file \
     --file tests/fixtures/aapl_msft_2m.parquet --test-fraction 0.3
+python -m quantlab live --strategy pair --symbol SPY --symbol QQQ --source synthetic --speed 10
 ```
+
+Any two symbols work, in the order of the `--symbol` options; the bundled samples are AAPL, MSFT, NVDA, SPY and QQQ. In a synthetic live session, the two generated series have a correlation of 0.8.
 
 ## 5. Current results
 

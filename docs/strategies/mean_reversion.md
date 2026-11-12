@@ -41,11 +41,11 @@ By default the router closes the position: after 5 bars (`holding_bars`), or ear
 | sizing (`size_mode`, `quantity`, `size_value`) | fixed, 10, none | `--param size_mode=risk --param size_value=0.5` |
 | exits (`stop_loss_pct`, `take_profit_pct`, `stop_atr`, `holding_bars`…) | 2, 5, none, 5 | `--param stop_atr=1.5` |
 
-Every parameter: `quantlab params --strategy mean_reversion`, or the form in the interface. The preset `presets/mean_reversion-middle-band.json` targets the middle band with stricter filters.
+The strategy has 19 parameters: `quantlab params --strategy mean_reversion` lists them, and the interface shows them as a form. The preset `presets/mean_reversion-middle-band.json` targets the middle band with stricter filters (RSI threshold 25, volume threshold 1.5).
 
 ## 4. Current results
 
-On the regression fixture (AAPL, 1-minute bars, 1,000 test bars, $100,000 of capital):
+On the regression fixture (`tests/fixtures/aapl_1m.parquet`: 1-minute AAPL bars, extended hours included, 4,000 training bars and 1,000 test bars, $100,000 of capital):
 
 | Trades | Win rate | Return | Profit factor | Max drawdown | Fees |
 |---|---|---|---|---|---|
@@ -55,7 +55,7 @@ Execution happens at the next bar's open, with slippage: a close is only known o
 
 ## 5. Analysis and next steps
 
-- The strategy trades rarely (21 trades in about 2.5 days), so it is sensitive to the sample. It needs a walk-forward validation over several months of data.
+- The strategy trades rarely (21 trades in about a day and a half), so it is sensitive to the sample. It needs a walk-forward validation over several months of data.
 - Ideas to try:
   - an exit at the middle band (`target_middle_band`);
   - limit orders at entry, to avoid paying the slippage;

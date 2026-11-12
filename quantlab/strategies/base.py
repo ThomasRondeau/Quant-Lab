@@ -1,7 +1,7 @@
 """
 Strategy contract shared by backtest and live.
 
-A strategy declares its features (`features()`), optionally fits models in `fit`, and decides on
+A strategy declares its features (`features()`), optionally fits models in `train`, and decides on
 each bar in `decide`. The base class owns the running state and the `FeatureFeed`, so a concrete
 strategy never manages buffers or caches and runs unchanged on historical or live bars.
 

@@ -52,9 +52,11 @@ The engine is **live-ready**. Backtest and live trading share one trading loop a
 Requires Python 3.10 or later.
 
 ```bash
-git clone <repository-url> quant-lab && cd quant-lab
+git clone https://github.com/ThomasRondeau/Quant-Lab.git quant-lab && cd quant-lab
 python -m pip install -e ".[dev]"
 ```
+
+`.[dev]` installs everything, tests and linters included. `.[ui]` is enough to run the interface, and a plain `-e .` to use the command line only.
 
 Run backtests offline. By default, the data comes from the bundled samples: 2-minute bars of AAPL, MSFT, NVDA, SPY and QQQ, about six weeks each.
 
@@ -76,14 +78,7 @@ Open the web interface:
 python -m quantlab ui
 ```
 
-### Online demo
-
-The interface deploys as is on [Streamlit Community Cloud](https://share.streamlit.io) (free):
-
-1. Create an app on the repository, branch `main`, main file `quantlab/ui/app.py`.
-2. In the advanced settings, choose Python 3.12 (the pinned versions have no wheels for the newest Python, where the install fails) and paste the secret `QUANTLAB_HOSTED = "1"`.
-
-The secret turns the hosted mode on: bundled data, capped computations, nothing written on the server (see [the architecture](docs/ARCHITECTURE.md)). The cloud installs `requirements.txt`, pinned to the versions the tests run on. Every push to `main` redeploys the app.
+It opens in the browser on the Data page; Backtest, Optimization and Live trading are in the menu.
 
 Watch a strategy trade live on a simulated market (5 bars per second, then compare with the backtester):
 
@@ -103,6 +98,19 @@ python -m quantlab plot --symbol SPY --days 3           # one session: candles, 
 python -m quantlab --help
 ```
 
+Every command and option is listed in the [command-line reference](docs/CODE_GUIDE.md#11-command-line-reference).
+
+### Online demo
+
+A public demo runs at <https://quant-lab-thomas-rondeau.streamlit.app/>, in hosted mode: bundled data, capped computations, no server path readable and presets kept in the visitor's session (see [the architecture](docs/ARCHITECTURE.md#11-hosted-mode)).
+
+To deploy your own copy on [Streamlit Community Cloud](https://share.streamlit.io) (free):
+
+1. Create an app on the repository, branch `main`, main file `quantlab/ui/app.py`.
+2. In the advanced settings, choose Python 3.12 (the pinned versions have no wheels for the newest Python, where the install fails) and paste the secret `QUANTLAB_HOSTED = "1"`.
+
+The secret turns the hosted mode on; without it, the public app runs unrestricted. The cloud installs `requirements.txt`, pinned to the versions the tests run on. Every push to `main` redeploys the app.
+
 ## How it works
 
 ```
@@ -121,13 +129,13 @@ python -m quantlab --help
 ```
 
 Details:
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the system works (data, features, models, execution, risk, metrics, sessions);
-- [docs/CODE_GUIDE.md](docs/CODE_GUIDE.md): code layout, main interfaces, and how to add a feature, a strategy, a model or a broker;
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the system works (data, features, models, execution, risk, metrics, sessions, the pages of the interface);
+- [docs/CODE_GUIDE.md](docs/CODE_GUIDE.md): command-line reference, code layout, main interfaces, how to add a feature, a strategy, a model or a broker, and the deployment;
 - [docs/strategies/](docs/strategies/): one write-up per strategy.
 
 ## Results: a word of caution
 
-The bundled fixtures cover about 2.5 days of test data. The tests use them to detect regressions, and they are far too short to measure performance:
+The figures below come from the regression fixtures of the tests (`tests/fixtures/`), with the default parameters. Each test block covers between a day and a half and a little over two days of trading, and 200 bars for ARIMA. The tests use these fixtures to detect regressions, and they are far too short to measure performance:
 
 | Strategy | Trades | Win rate | Return | Profit factor | Max drawdown |
 |---|---|---|---|---|---|
@@ -155,8 +163,10 @@ quantlab/
 ├── analysis/     session replay, dataset analysis, session chart
 ├── ui/           Streamlit interface
 └── cli.py        command line
-presets/          parameter presets (JSON)
+presets/          parameter presets (JSON), one per strategy
 tests/            offline test suite and frozen data fixtures
+docs/             architecture, code guide, one write-up per strategy
+requirements.txt  pinned environment of the online demo
 ```
 
 ## Development

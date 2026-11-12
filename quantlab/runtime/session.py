@@ -1,7 +1,7 @@
 """
 Files of a live trading session, in one directory:
 
-    session.json      settings of the session (mode, symbols, capital, risk limits, simulator costs)
+    session.json      settings of the session (mode, symbols, capital, risk limits, simulator costs, parameters)
     strategies.pkl    the strategies right after `fit`, before the first live bar (models + feature buffer)
     warmup.parquet    the history they were fitted on
     journal.sqlite    everything that happened (`Journal`)

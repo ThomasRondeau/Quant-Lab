@@ -30,7 +30,7 @@ The trigger is close to the one of [mean reversion](mean_reversion.md), a little
   - a buy candidate is executed (10 shares by default) only when the model predicts a rise;
   - a sell candidate only when it predicts a fall;
   - otherwise the signal is dropped.
-- The prediction is journaled at every bar (`diagnostics = {"direction_up": …}`), so it can be analyzed after a session.
+- The model is consulted only on the bars where the technical trigger fires. Its prediction is journaled on those bars (`diagnostics = {"direction_up": …}`), so it can be analyzed after a session.
 
 ## 3. Training without look-ahead
 
@@ -49,12 +49,20 @@ The trigger is close to the one of [mean reversion](mean_reversion.md), a little
 | `horizon`, `training_margin` | 5, 30 | `--param horizon=10 --param training_margin=40` |
 | indicator and composite-feature windows | RSI 14, Bollinger 20 / 2, volume 20, MACD 12/26/9… | `--param rsi_window=21` |
 | sizing (`size_mode`, `quantity`, `size_value`) | fixed, 10, none | `--param size_mode=risk --param size_value=0.5` |
+| exits (`stop_loss_pct`, `take_profit_pct`, `stop_atr`, `holding_bars`…) | 2, 5, none, 5 | `--param stop_atr=1.5` |
 
-Every parameter: `quantlab params --strategy ml_hybrid`, or the form in the interface.
+The strategy has 32 parameters: `quantlab params --strategy ml_hybrid` lists them, and the interface shows them as a form. The preset `presets/ml_hybrid-shallow.json` uses 200 shallower trees (depth 3) with a learning rate of 0.03.
+
+Rules checked before a run:
+- `rsi_buy` < `rsi_sell`, `macd_fast` < `macd_slow`, and distinct `momentum_windows`;
+- `training_margin` ≥ `horizon`;
+- a `holding_bars` different from `horizon` raises a warning: positions would not be held for the period the model predicts.
+
+The indicators need a long history: the MACD alone takes 404 bars to converge, and the whole feature set 424. The strategy decides nothing before that, so the training block must be longer.
 
 ## 5. Current results
 
-On the regression fixture (AAPL, 1-minute bars, 4,000 training bars and 1,000 test bars, $100,000 of capital):
+On the regression fixture (`tests/fixtures/aapl_1m.parquet`: 1-minute AAPL bars, extended hours included, 4,000 training bars and 1,000 test bars, about a day and a half, $100,000 of capital):
 
 | Trades | Win rate | Return | Profit factor | Max drawdown | Fees |
 |---|---|---|---|---|---|

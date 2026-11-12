@@ -42,7 +42,7 @@ Most of these columns are unitless (relative to the price or to the ATR), so the
    - The conviction is min(|amplitude| / `conviction_cap_pct`, 1), with a cap of 5 % by default.
    - The router turns it into a size. In `fixed` mode, that is `max(1, int(conviction × quantity))` shares, with `quantity` = 10 by default.
 
-The three predictions are journaled at every bar (`opportunity`, `direction_up`, `amplitude_pct`). The router handles the exit: after 5 bars, or at the −2 % stop loss or the +5 % take profit.
+The predictions are journaled: `opportunity` at every bar, `direction_up` and `amplitude_pct` on the bars where an opportunity is predicted. The router handles the exit: after 5 bars, or at the −2 % stop loss or the +5 % take profit.
 
 ## 4. Training and validation
 
@@ -62,20 +62,26 @@ Cascade exposes 47 parameters.
 | target (`horizon`, `opportunity_threshold_pct`, `training_margin`, `cv_folds`) | 5, 0.05, 30, 5 | `--param horizon=10 --param training_margin=40` |
 | indicator and composite-feature windows | see §2 | `--param momentum_windows=3,7,30` |
 | sizing (`size_mode`, `quantity`, `size_value`) | fixed, 10, none | `--param size_mode=risk --param size_value=0.5` |
+| exits (`stop_loss_pct`, `take_profit_pct`, `stop_atr`, `holding_bars`…) | 2, 5, none, 5 | `--param stop_atr=1.5` |
 
 Every parameter: `quantlab params --strategy cascade`, or the form in the interface.
 
-Changing `horizon` without `holding_bars` raises a warning: positions would not be held for the period the models predict. The preset `presets/cascade-horizon-10.json` changes both.
+Rules checked before a run:
+- `macd_fast` < `macd_slow`, `volume_fast_window` < `volume_slow_window`, and distinct `momentum_windows`;
+- `training_margin` ≥ `horizon`;
+- changing `horizon` without `holding_bars` raises a warning: positions would not be held for the period the models predict. The preset `presets/cascade-horizon-10.json` changes both, and raises the minimum amplitude to 0.1 %.
+
+The indicators need a long history: the MACD alone takes 404 bars to converge, and the whole feature set 424. The strategy decides nothing before that, so the training block must be longer.
 
 ## 6. Current results
 
-On the regression fixture (AAPL, 1-minute bars, 4,000 training bars and 1,000 test bars, $100,000 of capital):
+On the regression fixture (`tests/fixtures/aapl_1m.parquet`: 1-minute AAPL bars, extended hours included, 4,000 training bars and 1,000 test bars, $100,000 of capital):
 
 | Trades | Win rate | Return | Profit factor | Max drawdown | Fees |
 |---|---|---|---|---|---|
 | 25 | 52.0 % | +0.0014 % | 1.22 | −0.005 % | $1.39 |
 
-It is the only single-symbol strategy with a profit factor above 1 on this fixture. But the sample (25 trades in about 2.5 days) is far too small to conclude anything.
+It is the only single-symbol strategy with a profit factor above 1 on this fixture. But the sample (25 trades in about a day and a half) is far too small to conclude anything.
 
 ## 7. Analysis and next steps
 

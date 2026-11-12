@@ -1,9 +1,11 @@
 # Quant Lab code guide
 
 This document describes **how the code is organized**:
+- the command-line reference;
 - the modules and the main classes;
 - the conventions and the tests;
-- how to add a feature, a strategy, a model, a data source or a broker.
+- how to add a feature, a strategy, a model, a data source or a broker;
+- the dependencies and the deployment of the online demo.
 
 For how the system works as a whole (execution, risk, sessions), see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -34,6 +36,70 @@ python -m quantlab live --strategy pair --symbol SPY --symbol QQQ --source synth
 python -m quantlab replay --session demo
 ```
 
+The extras of `pyproject.toml`: `.[dev]` installs everything (interface, tests, linters), `.[ui]` the interface without the development tools, and a plain `-e .` the library and the command line only.
+
+### 1.1 Command-line reference
+
+`python -m quantlab <command> --help` prints the options of a command. `-v`, before the command, turns the debug logs on.
+
+| Command | Role |
+|---|---|
+| `backtest` | train the strategies on the start of the data and trade them on the end; prints the metrics |
+| `optimize` | walk-forward search of the parameters of one strategy |
+| `live` | simulated live trading of one strategy, saved as a session |
+| `replay` | rerun a session in the backtester and compare both |
+| `params` | list every parameter of the given strategies: group, type, default, bounds, help |
+| `plot` | chart one session: candles, volume, VWAP bands, support and resistance lines |
+| `ui` | open the web interface (`--port`, 8501 by default) |
+
+Options shared by several commands:
+
+| Option | Commands | Default | Role |
+|---|---|---|---|
+| `--symbol` | `backtest`, `optimize`, `live`, `plot` | required | repeat it for a two-symbol strategy |
+| `--source` | `backtest`, `optimize`, `plot` | `sample` | `sample`, `yfinance` or `file` |
+| `--file` | `backtest`, `optimize`, `plot` | | parquet or csv file of `--source file` |
+| `--days` | `backtest`, `optimize`, `plot`, `live` | 55 (`live`: 60) | history window, in calendar days; ignored for a file |
+| `--strategy` | `backtest`, `optimize`, `live`, `params` | required | `trend`, `mean_reversion`, `arima`, `ml_hybrid`, `cascade` or `pair`. `backtest` and `params` take several, `optimize` and `live` exactly one |
+| `--param` | `backtest`, `optimize`, `live` | | `key=value` for every selected strategy that declares the key, `strategy.key=value` for one |
+| `--params-file` | `backtest`, `optimize`, `live` | | preset JSON; a `--param` overrides it |
+| `--capital` | `backtest`, `live` | 100,000 | starting cash, in dollars |
+| `--fee-bps` | `backtest`, `live` | 1 | fees per side, in basis points of the notional |
+| `--slippage-bps` | `backtest`, `live`, `replay` | 1 (`replay`: the session's) | simulated slippage, in basis points |
+| `--max-order` | `backtest`, `live` | none | maximum shares per entry order |
+| `--max-position` | `backtest`, `live` | none | maximum net shares per symbol |
+| `--max-daily-loss` | `backtest`, `live` | none | kill switch, in percent of the day's starting equity |
+| `--sessions-dir` | `live`, `replay` | `sessions` | parent folder of the sessions |
+
+Options of one command:
+
+| Command | Option | Default | Role |
+|---|---|---|---|
+| `backtest` | `--test-days` | 5 | the last N calendar days are the test block |
+| | `--test-fraction` | | instead: the last fraction of the bars |
+| | `--each` | off | with several strategies, also run each one alone |
+| | `--bar-by-bar` | off | compute the features on the live path instead of the batch mode |
+| | `--trades`, `--equity` | | write the trades, or the equity curve, to this CSV file |
+| `optimize` | `--grid` | | `key=v1,v2,...`: the values to try |
+| | `--range` | | `key=min:max:step`: a range of a numeric parameter, checked by its bounds |
+| | `--train-size`, `--validation-size`, `--test-size` | required | block sizes, in bars |
+| | `--step` | the test size | shift between two folds |
+| | `--embargo` | 30 | bars dropped between two blocks |
+| | `--anchored` | off | growing training block |
+| | `--objective` | `total_return_pct` | metric to maximize |
+| | `--min-trades` | 5 | fewer trades discard a combination |
+| `live` | `--source` | `replay` | `replay` or `synthetic` market |
+| | `--data` | `sample` | where the bars come from: `sample` or `yfinance` |
+| | `--bars` | 975 | bars to stream |
+| | `--speed` | 2 | bars per second; 0 for as fast as possible |
+| | `--seed` | | seed of the synthetic market |
+| | `--session` | `<strategy>_<symbols>_<time>` | name of the session; it must be new |
+| `replay` | `--session` | required | name of the session |
+| `plot` | `--date` | the last session | New York date of the session |
+| | `--output` | | save the chart to this image file instead of showing it |
+
+`optimize` needs at least one `--grid` or `--range`. It has no capital or cost option: its backtests use the defaults.
+
 ---
 
 ## 2. Conventions
@@ -52,7 +118,7 @@ python -m quantlab replay --session demo
 
 ```
 quantlab/
-├── cli.py                  entry point: backtest | optimize | params | replay | plot | ui
+├── cli.py                  entry point: backtest | optimize | live | replay | params | plot | ui
 ├── __main__.py             `python -m quantlab`
 ├── targets.py              ForwardTarget (model targets)
 ├── data/
@@ -111,6 +177,13 @@ quantlab/
     ├── charts.py           Altair charts (equity, drawdown, per-trade P&L, bars, lines, price and volume on a
     │                       trading-time axis, histogram)
     └── hosting.py          hosted mode (QUANTLAB_HOSTED=1): limits, compute slots, safe preset names
+presets/                    one parameter preset per strategy (JSON)
+tests/                      offline test suite; fixtures/ holds the frozen bars and the baseline metrics
+docs/                       ARCHITECTURE.md, this guide, strategies/ (one write-up per strategy)
+pyproject.toml              dependencies, extras (ui, dev), ruff, mypy and pytest settings
+requirements.txt            pinned environment of the online demo (§8)
+.streamlit/config.toml      interface settings: uploads capped at 10 MB, no usage statistics
+.pre-commit-config.yaml     ruff and mypy hooks
 ```
 
 ---
@@ -193,6 +266,7 @@ A `strategy_id` defaults to the class name. It must be unique within a runner: p
 
 - `Order(symbol, side, quantity, strategy_id, order_type=MARKET, limit_price=None, stop_price=None, oca_group=None, order_id=<uuid>, exit_plan=None, group_id=None, sizing=None, conviction=1.0)`: frozen, and serializable with `to_dict` / `from_dict`.
 - `Fill(order, price, quantity, timestamp, fees=0.0, exec_id=None)`, with `signed_quantity`.
+- `Side`: `BUY` or `SELL`, with `sign` and `opposite`. `OrderType`: `MARKET`, `LIMIT` or `STOP`.
 - `OrderStatus`: `CANCELLED` or `REJECTED`, the terminal statuses that brokers report.
 - `Level.pct(0.02)`, `Level.distance(1.5)`, `Level.at(101.2)`, and `ExitPlan(stop, target, holding_bars, leg_stop)`.
 - `Sizing(mode, quantity, value, min_stop_pct)`, with `quantity_for(...)` and `group_quantities(...)`.
@@ -229,6 +303,7 @@ Implementations: `SimulatedBroker`, and `JournalingBroker`, a wrapper that recor
 
 ```python
 runner = StrategyRunner(strategies, broker, RiskManager(limits), capital=100_000, journal=None, state_store=None)
+# also: tick_size=0.01 (rounding of the protective prices), journal_features=True (journal every feature row)
 runner.run(feed)  # blocking; runner.stop() from another thread
 runner.step(bar)  # one bar
 runner.catch_up(bars)  # catch up after a restart (no decision)
@@ -238,9 +313,14 @@ runner.get_state() / runner.set_state(state)
 
 ### 4.9 High-level entry points
 
+- `load_bars(symbols, source, days, file=None)` and `split(data, test_days, test_fraction)` (`data/loading.py`): the bars of a source, and their training / test blocks.
+- `build_strategy(name, symbols, params=None)` (`strategies/registry.py`): a strategy from its command-line name, with validated parameters.
 - `backtest(strategies, training, data, capital=…, fee_bps=1, slippage_bps=1, risk_limits=None, precompute_features=True) -> BacktestResult` (`metrics`, `equity`, `trades`, `trades_frame()`).
-- `WalkForwardOptimizer(strategy_factory, param_grid, train_size, validation_size, test_size, objective="total_return_pct", embargo=…)`. `.run(data)` returns a `WalkForwardResult` (`summary()`, `param_stability()`, `mean_test_score`). The factory must return a **new** instance at each call.
-- `replay_session(folder)` returns a `ReplayReport` (`summary`, `signals`, `entry_fills`, `feature_diffs`).
+- `WalkForwardOptimizer(strategy_factory, param_grid, train_size, validation_size, test_size, objective="total_return_pct", step=None, embargo=0, anchored=False, min_trades=1)`. `.run(data)` returns a `WalkForwardResult` (`summary()`, `param_stability()`, `mean_test_score`, `folds`). The factory must return a **new** instance at each call. The command line and the interface pass an embargo of 30 bars and a minimum of 5 trades.
+- `SimulatedSession(folder, SimulatedConfig(strategy, symbols, …))` (`live/session.py`): `prepare()` loads the bars, trains the strategy and writes the snapshot; `run()` streams the bars and blocks; `stop()` can be called from another thread.
+- `replay_session(folder, fee_bps=None, slippage_bps=None)` returns a `ReplayReport` (`summary`, `signals`, `entry_fills`, `feature_diffs`).
+- `read_journal(path)` (`runtime/journal.py`) returns the bars and the events of a session; `.kind(name)` gives the events of one kind as a table.
+- `analysis/dataset.py`, on the bars of one symbol in New York time (`symbol_bars`): `summary`, `sessions`, `intraday_returns`, `return_stats`, `intraday_profile`, `quality`, and `return_correlation` across symbols.
 
 ---
 
@@ -318,12 +398,15 @@ class BreakoutStrategy(Strategy):
 Then:
 
 1. Register it in `strategies/registry.py`: `"breakout": StrategySpec(BreakoutStrategy)`. Add `n_symbols=2` for a two-asset strategy.
-2. It is now available everywhere:
-   - on the command line: `quantlab backtest --strategy breakout --param k=1.5`, `quantlab params --strategy breakout`, `optimize --range k=1:3:0.5`;
+2. Give it a display name in `STRATEGY_LABELS` (`ui/app.py`). The pages look the name up there, and fail on a strategy without one.
+3. It is now available everywhere:
+   - on the command line: `quantlab backtest --strategy breakout --param k=1.5`, `quantlab params --strategy breakout`, `optimize --range k=1:3:0.5`, `live --strategy breakout`;
    - in the interface, with a form generated from `PARAMS`.
 
    `tests/test_params.py` checks that the sheet and the constructor agree.
-3. Add a case to `tests/test_characterization.py` (then `UPDATE_BASELINE=1`, see §7), and its features to `tests/test_features.py`.
+4. For the online demo, give it a budget of walk-forward runs in `Limits.max_optimize_runs` (`ui/hosting.py`). Without one, the hosted mode refuses to optimize it.
+5. Add a case to `tests/test_characterization.py` (then `UPDATE_BASELINE=1`, see §7), and its features to `tests/test_features.py`.
+6. Document it: a write-up in `docs/strategies/`, a row in the strategy tables of the README and of ARCHITECTURE.md (§6), and optionally a preset in `presets/`.
 
 Points to watch:
 
@@ -355,8 +438,11 @@ The estimator must be picklable: sessions save the fitted strategies.
 ### 5.4 Add a data source
 
 1. Add a method `collect_data_<source>(symbol, days_back, until)` to `DataManager`. It **returns `validate_ohlcv(...)`**.
-2. Add the source's name to `SOURCES` and to `load_bars` in `data/loading.py`. The CLI and the interface both pick it up.
-3. Write a test with a faked response, without network, as `test_bugfixes.py` does for yfinance.
+2. Add the source's name to `SOURCES` and to `load_bars` in `data/loading.py`. The command line picks it up.
+3. Give it a display name in `SOURCE_LABELS` (`ui/app.py`): the source selector of the interface fails on a source without one.
+4. Write a test with a faked response, without network, as `test_bugfixes.py` does for yfinance.
+
+To add a bundled sample, save the 2-minute bars of the symbol as `quantlab/data/samples/<SYMBOL>.parquet`. The file is found by its name, and the interface lists it.
 
 ### 5.5 Add a broker
 
@@ -378,7 +464,8 @@ The interface (`quantlab/ui/app.py`) holds no logic of its own: each page calls 
   - widgets are bounded according to the type, and the `check` errors are shown;
   - presets come from `presets/`;
   - the optimization grid is built from ranges (`grid_inputs`);
-  - a new strategy registered in `registry.py` therefore appears on every page without interface code.
+  - a new strategy registered in `registry.py` therefore needs no form code, only a display name in `STRATEGY_LABELS`.
+- **Pages**: `page_data`, `page_backtest`, `page_optimize` and `page_live`, declared in `main()` with `st.navigation`. The first one is the landing page; the others have the addresses `/backtest`, `/optimization` and `/live`. What each page shows is described in [ARCHITECTURE.md §11](ARCHITECTURE.md).
 - **Widget values** are kept in `st.session_state["<page>_<strategy>_<parameter>"]`. Presets write them there, before the widgets are drawn.
 - **Reruns**: Streamlit reruns the script at every interaction. Results to keep go to `st.session_state`, and downloaded data to `st.cache_data`.
 - **Live page**: sessions run in the `SimulatedSessions` registry (`st.cache_resource`), and the monitor is an `st.fragment(run_every=2)` that only runs while a session is alive. It reads the session's files (`read_session`), never the running objects, so the UI thread does not race the trading thread.
@@ -391,7 +478,8 @@ The interface (`quantlab/ui/app.py`) holds no logic of its own: each page calls 
 ## 6. Pitfalls
 
 - **Batch / live parity**: if a strategy behaves differently with `--bar-by-bar`, a feature is not causal or its warmup is too short. The tests of `test_features.py` pinpoint it.
-- **Fixtures without a time zone**: `aapl_1m.parquet` has a naive index. The runner accepts it, but `validate_ohlcv` would convert it to UTC.
+- **Fixtures without a time zone**: `aapl_1m.parquet` has a naive index. The runner accepts it, but `validate_ohlcv` would convert it to UTC. Its 5,000 one-minute bars include the extended hours, about 700 bars per day, so 1,000 bars cover about a day and a half.
+- **Streamlit keeps imported modules**: after editing a module other than `ui/app.py`, restart the interface to see the change.
 - **Unique `strategy_id`** within a runner: otherwise `StrategyRunner` raises an error.
 - **Pickle**: a strategy must be picklable for sessions, so no lambda and no connection in its attributes. `test_every_strategy_survives_the_session_snapshot` checks it.
 
@@ -412,7 +500,7 @@ The interface (`quantlab/ui/app.py`) holds no logic of its own: each page calls 
 | `test_ui.py` | Streamlit interface without a browser (`AppTest`): every page renders, generated forms, presets, optimization ranges, backtest and data page end to end, the dataset analysis |
 | `test_bugfixes.py` | regressions of the bugs fixed during the refactoring of the original prototype |
 | `test_live.py` | paced feeds, synthetic market, simulated sessions (replayed with 100 % agreement), stop, background registry and its limits, live view, the live page end to end |
-| `test_hosting.py` | hosted mode: bundled samples, limits, safe preset names, compute slots, the hosted backtest page |
+| `test_hosting.py` | hosted mode: bundled samples, limits, safe preset names, compute slots, the hosted backtest, live and data pages; `requirements.txt` pins every declared dependency |
 | `test_walk_forward.py` | fold layout, embargo, parameter selection, fresh instances |
 | `test_latency.py` (slow) | median `on_bar` latency of Cascade < 100 ms |
 
@@ -426,3 +514,13 @@ git diff tests/fixtures/baseline_metrics.json     # review and justify every dif
 ```
 
 A pure refactoring must **never** modify this file.
+
+---
+
+## 8. Dependencies and deployment
+
+- **`pyproject.toml`** declares the dependencies with minimum versions, and two extras: `ui` (Streamlit) and `dev` (Streamlit, pytest, ruff, mypy, pandas-stubs, pre-commit). The charts use Altair, which Streamlit installs.
+- **`requirements.txt`** is the environment of the online demo: Streamlit Community Cloud installs this file, not `pyproject.toml`. It pins every dependency to the version the tests run on. `test_requirements_pin_the_declared_dependencies` fails when a dependency of `pyproject.toml` is missing from it, or pinned outside its allowed range. When a dependency changes, update both files.
+- **Python**: 3.10 or later. The online demo runs on Python 3.12, chosen in the settings of the app, because the pinned versions have no prebuilt package for newer versions.
+- **Online demo**: the app runs `quantlab/ui/app.py` from the `main` branch, and every push to `main` redeploys it. The secret `QUANTLAB_HOSTED = "1"`, set in the settings of the app, reaches the code as an environment variable and turns the hosted mode on ([ARCHITECTURE.md §1.1](ARCHITECTURE.md)). Without it, the public app runs unrestricted.
+- **`.streamlit/config.toml`** applies to local and hosted runs: uploads capped at 10 MB, usage statistics off.

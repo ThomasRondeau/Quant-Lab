@@ -34,8 +34,9 @@ See [ARCHITECTURE.md §7](../ARCHITECTURE.md).
 | `sma_fast` | 5 | `--param sma_fast=10` |
 | `sma_slow` | 20 | `--param sma_slow=50` |
 | sizing (`size_mode`, `quantity`, `size_value`) | fixed, 10, none | `--param size_mode=risk --param size_value=0.5` |
+| exits (`stop_loss_pct`, `take_profit_pct`, `stop_atr`, `holding_bars`…) | 2, 5, none, 5 | `--param stop_atr=1.5` |
 
-Every parameter (indicators, sizing, exits): `quantlab params --strategy trend`, or the form in the interface.
+`sma_fast` must be smaller than `sma_slow`. The strategy has 12 parameters: `quantlab params --strategy trend` lists them, and the interface shows them as a form. The preset `presets/trend-atr-exits.json` replaces the percentage exits by ATR ones (stop at 1.5 ATR, target at 3 ATR) and holds 20 bars.
 
 ```bash
 python -m quantlab backtest --strategy trend --symbol AAPL --days 55 --test-days 5
@@ -51,7 +52,7 @@ On the regression fixture (`tests/fixtures/aapl_1m.parquet`: 4,000 one-minute ba
 |---|---|---|---|---|---|
 | 72 | 19.4 % | −0.096 % | 0.36 | −0.10 % | $39.86 |
 
-This fixture detects regressions; it does not measure performance, since it covers only about 2.5 days.
+This fixture detects regressions; it does not measure performance. Its bars include the extended hours, about 700 per day, so the test block covers only about a day and a half.
 
 ## 5. Analysis and next steps
 

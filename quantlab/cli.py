@@ -1,12 +1,13 @@
 """
 quantlab command line: one entry point for strategy research.
 
+    quantlab backtest --strategy trend --symbol AAPL --test-days 5          (offline, on the bundled sample)
     quantlab backtest --strategy trend --symbol AAPL --source yfinance --days 55 --test-days 5
     quantlab backtest --strategy cascade --strategy trend --symbol SPY --days 55 --each
-    quantlab backtest --strategy trend --symbol AAPL --source file --file tests/fixtures/aapl_1m.parquet \
-                      --test-fraction 0.3                (offline, on the bundled sample)
+    quantlab backtest --strategy trend --symbol AAPL --source file --file tests/fixtures/aapl_1m.parquet \\
+                      --test-fraction 0.3
     quantlab backtest --strategy pair --symbol AAPL --symbol MSFT --param zscore_threshold=2.0
-    quantlab backtest --strategy trend --strategy mean_reversion --symbol AAPL --param trend.stop_atr=1.5 \
+    quantlab backtest --strategy trend --strategy mean_reversion --symbol AAPL --param trend.stop_atr=1.5 \\
                       --param mean_reversion.target_middle_band=true --param holding_bars=10
     quantlab backtest --strategy trend --symbol AAPL --params-file presets/trend-atr-exits.json
     quantlab params --strategy cascade                (every parameter: group, default, bounds, help)
@@ -17,7 +18,8 @@ quantlab command line: one entry point for strategy research.
     quantlab plot --symbol SPY --days 3
     quantlab ui                                     (graphical interface in the browser)
 
-Data sources: yfinance (2-minute bars, ~60 days, free, no API key) and file (--file bars.parquet|csv).
+Data sources: sample (the default: bundled 2-minute bars of AAPL, MSFT, NVDA, SPY and QQQ, offline), yfinance
+(2-minute bars, ~60 days, free, no API key) and file (--file bars.parquet|csv).
 
 Parameters: `quantlab params --strategy NAME` lists them. `--param key=value` applies to every selected strategy
 that declares the key, `--param name.key=value` to one; `--params-file` loads a preset (JSON, see presets/),
